@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vit-interp"
+version = "0.1.0"
+description = "A close-to-vanilla ViT emulator of E3SMv3, built to be taken apart with exege"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.24",
+    "torch>=2.2",
+    "xarray>=2023.1",
+    "netCDF4>=1.6",
+    "cftime",
+    "pyyaml",
+    "matplotlib",
+    "exege-core[circuits]",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7.4"]
+
+# The trained model, reachable by name from exege:
+#   exege.circuits.open_patchable(ckpt, "vit-interp")          native grid: Patchable, EdgeGradients
+#   exege.latents.open_intervenable(ckpt, "vit-interp-tokens") token grid: Intervenable
+[project.entry-points."exege.adapters"]
+vit-interp = "vit_interp.exege_adapter:ViTEmulator"
+vit-interp-tokens = "vit_interp.exege_adapter:ViTTokens"
+
+# exege's circuits extra is on a branch until it is released.
+[tool.uv.sources]
+exege-core = { git = "https://github.com/mahf708/exege", branch = "mahf708/circuits" }
+
+[tool.hatch.build.targets.wheel]
+packages = ["vit_interp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
