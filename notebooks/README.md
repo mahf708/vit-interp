@@ -1,6 +1,6 @@
 # Hackathon playground: inside a ViT weather emulator
 
-Seven notebooks that go from "run the model" to circuits and physics laws, with one helper
+Eight notebooks that go from "run the model" to circuits and physics laws, with one helper
 module, `vit_interp.playground` (`pg`), that keeps every cell to a line or three. Nothing has
 to be coded from scratch. Each notebook ends with a **Try this** list to branch off from.
 
@@ -13,6 +13,7 @@ to be coded from scratch. Each notebook ends with a **Try this** list to branch 
 | `04_direct_attribution` | which head or MLP *writes* the V_3 tendency over a box, as maps that add up exactly to the output; direct vs total effect | `pg.direct_attribution` |
 | `05_exege_latents` | export a latent archive and use [exege](https://github.com/mahf708/exege): channels that respond in a region, similarity maps, PCA, a sparse autoencoder | `python -m vit_interp.export`, `exege latents …`, `exege nn sae` |
 | `06_rossby_probe` | LAWFUL-style: plant a Rossby wave and test the model's phase speeds against c − U = −β/K²; which layers carry it | `vit_interp.rossby` |
+| `07_exege_circuits_and_laws` | the papers' methods through exege on the real model: Vi-CD edge circuits (EAP, pruning, faithfulness curve, stable cores) and LAWFUL (Rossby consistency, sufficiency/necessity, τ-circuit search) | `exege.circuits`, `exege.laws` |
 
 **Just want to look?** Executed copies, with all figures, are in
 `/lcrc/globalscratch/ac.ngmahfouz/vit-interp/notebooks-executed/`.

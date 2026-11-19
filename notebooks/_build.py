@@ -440,4 +440,115 @@ pd.DataFrame(rows)
 5. Does the wave's growth rate tell you about baroclinic instability (growth for s ≈ 6–8 in winter)?
 """),
 ])
+
+# ---------------------------------------------------------------------------------------------
+write("07_exege_circuits_and_laws.ipynb", [
+    md("""
+# 07 · Circuits and laws with exege
+
+Two papers, two tools, both run on the real ViT through exege's adapter (`vit-interp`). Nothing here is ViT-specific: exege only sees a system that can be **patched**.
+
+* **Seeing Through Circuits (Vi-CD):** which **edges** (head → head, head → MLP, … → output) does a behaviour run through? We patch edges from a counterfactual run and keep the ones whose loss moves the metric. The graph has 57 senders, 17 receivers and **513 edges**.
+* **LAWFUL:** does the model obey a **law** (here barotropic Rossby dispersion), and which components carry that agreement (sufficiency / necessity)?
+
+Command-line equivalents are at the end: `exege circuits …` and `exege laws …`.
+"""),
+    code(SETUP),
+    code("""
+from exege.circuits import open_patchable, field_mean, attribute, prune, faithfulness_curve, core, jaccard
+from exege.laws import Rossby, Envelope, measure, deviations, search, components
+CKPT = os.environ.get("PLAYGROUND_CKPT") or str(pg.default_checkpoint())
+system = open_patchable(CKPT, "vit-interp", year=2010)
+g = system.graph(); grid = system.grid()
+print(len(g.senders), "senders,", len(g.receivers), "receivers,", g.n_edges, "edges")
+"""),
+    md("""
+## A behaviour and its counterfactual
+
+The behaviour is the mean 6-h **V_3** (jet-level meridional wind) over the North Pacific. Its counterfactual is the same metric 5 days later (another weather state). Vi-CD inpaints the object out of an image; for an emulator *which* counterfactual you choose is the scientific question, so try others below.
+"""),
+    code("""
+metric = field_mean(grid, "V_3", where=grid.within(45, 180, 2000))
+base = system.states(["2010-01-15T00"])
+source = system.states(["2010-01-20T00"])
+"""),
+    md("## Score every edge (EAP: one gradient), then prune (one patched step per edge)"),
+    code("""
+a = attribute(system, base, source, metric, method="eap")
+print(f"clean {a.clean:.3f}, counterfactual {a.corrupt:.3f}")
+import pandas as pd
+pd.DataFrame(a.ranked(15), columns=["edge", "score (metric change if this edge alone is patched)"])
+"""),
+    code("""
+c = prune(system, base, source, metric, tau=0.05 if FAST else 0.02)
+print(f"{c.n_edges} of {g.n_edges} edges recover {c.recovery:.1%} of the clean-vs-counterfactual gap")
+print("components in the circuit:", " ".join(c.components()))
+"""),
+    md("Does EAP's ranking find faithful circuits? Keep the top-k edges by EAP score and patch the rest (Vi-CD's first experiment):"),
+    code("""
+sizes = [5, 20, 60, 150] if FAST else [5, 10, 20, 40, 60, 100, 200, 513]
+curve = faithfulness_curve(system, base, source, metric, a, sizes)
+plt.plot(curve.sizes, curve.recoveries, "o-"); plt.axhline(1, color="k", lw=0.5)
+plt.xscale("log"); plt.xlabel("edges kept (top-k by EAP)"); plt.ylabel("recovery"); plt.title("faithfulness vs sparsity");
+"""),
+    md("""
+## Rossby waves: LAWFUL
+
+Plant a small, balanced Rossby wave of zonal wavenumber s = 2…14 at 45°N on several real states, take one step, and read the wave's frequency off the model's response. Compare with ω − kŪ = −βk/(k²+l²).
+
+* `score="eq10"` is LAWFUL's misfit score: 1 means the model matches the law, and negative means it is worse than the law's mean.
+* `score="correlation"` asks only whether the model follows the law's **shape** across s.
+"""),
+    code("""
+law = Rossby(u=("U_2", "U_3", "U_4"), v=("V_2", "V_3", "V_4"), observe_field="V_3", ps="PS",
+             band=Envelope(45, 10), wavenumbers=range(2, 9) if FAST else range(2, 15))
+X = system.states([0, 120] if FAST else [0, 60, 120, 180, 240, 300, 360, 420])
+r10 = measure(system, X, law); rc = measure(system, X, law, score="correlation")
+print(f"M (eq10) = {r10.M:.2f}    M (correlation) = {rc.M:.3f}")
+df = pd.DataFrame(r10.rows())
+plt.plot(df.alpha, df.model, "o-", label="ViT"); plt.plot(df.alpha, df.law, "s--", label="barotropic theory")
+plt.xlabel("zonal wavenumber s"); plt.ylabel("intrinsic frequency ω − kŪ [rad/day]"); plt.legend();
+"""),
+    md("Which blocks carry the shape? Sufficiency (`d_suf` small = this block alone reproduces it) and necessity (`d_nec` large = the rest can't do without it), on the correlation score:"),
+    code("""
+rows = []
+for L in ([4, 5, 6] if FAST else range(8)):
+    comps = [f"a{L}.h{h}" for h in range(6)] + [f"m{L}"]
+    d = deviations(system, X, law, comps, score="correlation")
+    rows.append({"block": L, "M_suf": d.M_suf, "M_nec": d.M_nec, "d_suf": d.d_suf, "d_nec": d.d_nec})
+pd.DataFrame(rows).round(3)
+"""),
+    md("LAWFUL's greedy search for τ-consistent circuits (nested, minimal). It is slow-ish: one patched sweep per candidate per step, so a few minutes on a GPU."),
+    code("""
+if not FAST:
+    s = search(system, system.states([0, 120, 240, 360]), law,
+               taus=(0.5, 0.7, 0.9), score="correlation", controls=[system.states([60, 180, 300, 420])])
+    for circ in s.circuits:
+        d = circ.deviations
+        print(f"tau {circ.tau}: {len(circ.components)} components  d_suf {d.d_suf:.3f}  d_nec {d.d_nec:.3f}"
+              f"  control d_suf {[round(x, 3) for x in d.to_dict().get('d_suf_random', [])]}")
+        print("   ", " ".join(circ.components))
+"""),
+    md("""
+## The same from a terminal
+
+```console
+$ exege circuits attribute --adapter vit-interp --source $CKPT --field V_3 --lat 45 --lon 180 \\
+    --base 2010-01-15T00 --source-starts 2010-01-20T00 --method eap
+$ exege circuits prune ... --tau 0.02 --out circuit.json
+$ exege laws rossby --adapter vit-interp --source $CKPT --u U_2,U_3,U_4 --v V_2,V_3,V_4 \\
+    --observe V_3 --ps PS --phi0 45 --starts 0,60,120,180 --score correlation --search
+```
+
+## Try this
+
+1. **Counterfactuals.** Swap the source for the climatology, or for the same day with the trough removed (`system.perturb`), or for a day 6 hours later. Do circuits change?
+2. **Stable cores.** Prune for 5 different January days, then `core([...])`. Which edges are always there? (Vi-CD RQ2)
+3. **Regions.** Run circuits for tropics vs midlatitudes vs polar boxes and compare with `jaccard`.
+4. **Steering level.** `Rossby(..., u_bar="U_5")`: does a lower steering wind close the gap with theory?
+5. **Hemispheres and seasons.** `Envelope(-45, 10)`, and July states (`system.states(["2010-07-15T00", ...])`). β is the same, Ū is not.
+6. **Errors** (the Nov 4 paper): pick a metric that is the model's *error* (ViT minus E3SM) in a region, and find the circuit that produces it.
+"""),
+])
+
 print("wrote", sorted(p.name for p in HERE.glob("*.ipynb")))
