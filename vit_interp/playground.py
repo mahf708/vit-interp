@@ -59,8 +59,9 @@ def meta(data: str = DATA_ROOT) -> dict:
 
 
 def default_checkpoint() -> Path:
-    """The fine-tuned (stage 2) best checkpoint if it exists, else the stage 1 best."""
-    for p in (RUN / "stage2" / "best.pt", RUN / "stage1" / "best.pt"):
+    """The released checkpoint: release/v2.pt when it exists, else release/v1.pt (frozen copies,
+    so a running training job can never change what a notebook loads)."""
+    for p in (RUN / "release" / "v2.pt", RUN / "release" / "v1.pt", RUN / "stage1" / "best.pt"):
         if p.exists():
             return p
     raise FileNotFoundError(f"no checkpoint under {RUN}")

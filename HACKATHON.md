@@ -26,7 +26,7 @@ Just want to look? Executed copies with every figure:
 ## 2. One-liners (no Python)
 
 On a GPU node, with `export PATH=/home/ac.ngmahfouz/vit-interp/.venv/bin:$PATH` and
-`CKPT=` the checkpoint below:
+`CKPT=/lcrc/globalscratch/ac.ngmahfouz/vit-interp/runs/vit-p4-d384-l8/release/v1.pt`:
 
 ```console
 $ exege circuits graph --adapter vit-interp --source $CKPT
@@ -60,7 +60,7 @@ Hooks follow TransformerLens names (`blocks.{i}.attn.hook_pattern`, `hook_result
 
 | | |
 |---|---|
-| checkpoints | `/lcrc/globalscratch/ac.ngmahfouz/vit-interp/runs/vit-p4-d384-l8/` (`stage1/best.pt` one-step; `ft/ft8/best.pt` rollout-tuned) |
+| checkpoints | `/lcrc/globalscratch/ac.ngmahfouz/vit-interp/runs/vit-p4-d384-l8/release/v1.pt` (frozen; 4- then 8-step rollout-tuned; the notebooks' default). `stage1/best.pt` is the one-step model, for comparisons |
 | data | `/lcrc/globalscratch/ac.ngmahfouz/vit-interp/data/` (2000–2009 train, 2010 for everything here) |
 | skill | `runs/vit-p4-d384-l8/eval-*/summary.md` (year-long free run, RMSE/ACC vs lead) |
 | exege docs | `exege/docs/circuits.md`, `exege/docs/laws.md` on branch `mahf708/circuits` |
@@ -76,5 +76,8 @@ Hooks follow TransformerLens names (`blocks.{i}.attn.hook_pattern`, `hook_result
 - Planted Rossby waves move **westward relative to the flow and faster for the longest
   waves**, the right *shape* (r ≈ 0.98 with theory), but 3–4× the barotropic magnitude.
   Steering level? Baroclinicity? The patch size? That is a good afternoon.
-- One-step skill is good; free-running for months drifts (one-step training), and rollout
-  fine-tuning is in progress. Use few-day questions for the cleanest answers.
+- Skill (release/v1, year 2010): 5-day anomaly correlation 0.87 (PS), 0.84 (T_7), 0.83
+  (U_3), 0.78 (V_3); free-running with dry-air/positivity correction it holds up for ~8
+  months before drifting cold. Rollout fine-tuning took the free run from 58 to 248 days.
+  Patch seams (a 4° checkerboard) grow in long runs: few-day questions give the cleanest
+  answers. Full numbers: `runs/vit-p4-d384-l8/eval-ft8-corrected/summary.md`.
