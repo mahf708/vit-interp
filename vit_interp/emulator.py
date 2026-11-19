@@ -35,9 +35,13 @@ class Emulator(nn.Module):
         self.register_buffer("std", torch.tensor(stats.std[:N_ALL])[None, :, None, None])
         self.register_buffer("res_std", torch.tensor(stats.res_std)[None, :, None, None])
         if self.n_diag:
-            dm, ds = getattr(stats, "diag_mean", np.zeros(0)), getattr(stats, "diag_std", np.zeros(0))
+            # Placeholders when the stats have no diagnostics (a dataset without them): every
+            # normalization buffer is saved in the checkpoint and restored by load_state_dict,
+            # so a v2 checkpoint loads against v1 data (whose 39 input channels are the same).
+            dm = getattr(stats, "diag_mean", np.zeros(0))
+            ds = getattr(stats, "diag_std", np.zeros(0))
             if len(dm) != self.n_diag:
-                raise ValueError(f"the model predicts {self.n_diag} diagnostics; the stats hold {len(dm)}")
+                dm, ds = np.zeros(self.n_diag, np.float32), np.ones(self.n_diag, np.float32)
             self.register_buffer("diag_mean", torch.tensor(dm)[None, :, None, None])
             self.register_buffer("diag_std", torch.tensor(ds)[None, :, None, None])
         w = torch.cos(torch.deg2rad(torch.tensor(np.asarray(lat), dtype=torch.float32)))
