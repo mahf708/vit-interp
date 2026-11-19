@@ -1,0 +1,43 @@
+#!/bin/bash
+# Run the exege circuits/laws commands on a checkpoint, as a participant would.
+#   qsub -v CKPT=.../best.pt,OUT=.../explore scripts/explore.pbs     (from ~/vit-interp)
+#PBS -A E3SM
+#PBS -q gpu
+#PBS -N vit-explore
+#PBS -l select=1:ngpus=1
+#PBS -l walltime=02:00:00
+#PBS -j oe
+#PBS -o logs/
+set -uo pipefail
+cd "${PBS_O_WORKDIR:-$HOME/vit-interp}"
+CKPT=${CKPT:?set CKPT}; OUT=${OUT:?set OUT}; mkdir -p "$OUT"
+X=".venv/bin/exege"
+SYS="--adapter vit-interp --source $CKPT"
+STARTS=0,60,120,180,240,300,360,420          # 8 states, every 15 days of 2010
+LEVELS="--u U_2,U_3,U_4 --v V_2,V_3,V_4 --observe V_3 --ps PS"
+for phi in 30 45 60 -45; do
+  echo "== $(date +%T) Rossby at $phi"
+  /usr/bin/time -f "%e s" $X laws rossby $SYS $LEVELS --phi0 $phi --starts $STARTS --out "$OUT/rossby_phi$phi.json"
+  echo "== $(date +%T) Rossby (with Doppler) at $phi"
+  $X laws rossby $SYS $LEVELS --phi0 $phi --starts $STARTS --doppler --out "$OUT/rossby_doppler_phi$phi.json"
+done
+echo "== $(date +%T) EAP: V_3 over the North Pacific, Jan 15 vs Jan 20"
+/usr/bin/time -f "%e s" $X circuits attribute $SYS --field V_3 --lat 45 --lon 180 --radius-km 2000 \
+  --base 56 --source-starts 76 --method eap --top 25 --out "$OUT/eap_v3_npac.json"
+echo "== $(date +%T) prune the same"
+/usr/bin/time -f "%e s" $X circuits prune $SYS --field V_3 --lat 45 --lon 180 --radius-km 2000 \
+  --base 56 --source-starts 76 --tau 0.02 --out "$OUT/prune_v3_npac.json"
+for ub in U_3 U_5; do
+  echo "== $(date +%T) Rossby at 45, correlation score, steering wind $ub"
+  $X laws rossby $SYS $LEVELS --phi0 45 --starts $STARTS --score correlation --u-bar $ub --out "$OUT/rossby_corr_phi45_$ub.json"
+done
+echo "== $(date +%T) LAWFUL search at 45N, correlation score (4 states, control)"
+/usr/bin/time -f "%e s" $X laws rossby $SYS $LEVELS --phi0 45 --starts 0,120,240,360 --search --score correlation \
+  --taus 0.3,0.5,0.7,0.9 --control 60,180,300,420 --out "$OUT/rossby_search_corr_phi45.json"
+echo "== $(date +%T) LAWFUL search at 45S with Doppler, eq. 10 (4 states, control)"
+/usr/bin/time -f "%e s" $X laws rossby $SYS $LEVELS --phi0 -45 --doppler --starts 0,120,240,360 --search \
+  --taus 0.3,0.5,0.7,0.9 --control 60,180,300,420 --out "$OUT/rossby_search_doppler_phim45.json"
+echo "== $(date +%T) LAWFUL search at 45N (4 states, control)"
+/usr/bin/time -f "%e s" $X laws rossby $SYS $LEVELS --phi0 45 --starts 0,120,240,360 --search \
+  --taus 0.3,0.5,0.7,0.9 --control 60,180,300,420 --out "$OUT/rossby_search_phi45.json"
+echo "== $(date +%T) done"
