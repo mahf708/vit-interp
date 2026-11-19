@@ -40,6 +40,15 @@ def years(s: str) -> list[int]:
     return list(range(lo, hi + 1))
 
 
+def load_weights(em, sd) -> None:
+    """Load a checkpoint's state_dict. The corrector's buffers are never saved (they are built
+    from the dataset's metadata), so they are the one thing allowed to be missing."""
+    missing, unexpected = em.load_state_dict(sd, strict=False)
+    missing = [k for k in missing if not k.startswith("corrector.")]
+    if missing or unexpected:
+        raise RuntimeError(f"checkpoint mismatch: missing {missing}, unexpected {unexpected}")
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--out", required=True)
@@ -131,7 +140,7 @@ def main():
         ema = {k: v.detach().clone().float() for k, v in em.net.state_dict().items()}
     if (out / "latest.pt").exists():
         ck = torch.load(out / "latest.pt", map_location=dev, weights_only=False)
-        em.load_state_dict(ck["state_dict"])
+        load_weights(em, ck["state_dict"])
         if ema is not None:
             ema = {k[len("net."):]: v.clone().float() for k, v in ck["state_dict"].items()
                    if k.startswith("net.")}
@@ -142,7 +151,7 @@ def main():
         epoch, step, best = ck["epoch"], ck["step"], ck["best"]
         log(f"resumed at epoch {epoch} step {step}")
     elif a.init:
-        em.load_state_dict(torch.load(a.init, map_location=dev, weights_only=False)["state_dict"])
+        load_weights(em, torch.load(a.init, map_location=dev, weights_only=False)["state_dict"])
         if ema is not None:
             ema = {k: v.detach().clone().float() for k, v in em.net.state_dict().items()}
         log(f"initialized from {a.init}")
