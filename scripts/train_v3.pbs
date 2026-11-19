@@ -27,18 +27,18 @@ $BIN/python -c "import vit_interp, sys; assert vit_interp.__file__.startswith('$
 COMMON="--data $D --train-years ${TRAIN_YEARS:-1980-2009} --val-years 2010-2010 --head-conv 3 --ema 0.999
   --corrector dry_air,positive,moisture,energy --unaccounted-heating ${HEAT:-0.6}
   --noise-dim ${NOISE_DIM:-32} --noise-type ${NOISE_TYPE:-gaussian} --loss ensemble --n-ensemble ${NENS:-2}
-  --crps-weight 0.9 --energy-weight 0.1"
+  --crps-weight ${CRPS_W:-1.0} --energy-weight ${ENERGY_W:-0.0}"
 T="$BIN/torchrun --standalone --nproc-per-node 4 -m vit_interp.train"
 
 echo "$(date) v3 stage 1: one-step"
-$T --out "$O/stage1" $COMMON --batch 8 --lr 3e-4 --epochs ${EPOCHS1:-60} --input-noise 0.02 \
+$T --out "$O/stage1" $COMMON --batch 8 --lr 3e-4 ${INIT1:+--init $INIT1} --epochs ${EPOCHS1:-12} --input-noise 0.02 \
   --walltime-min ${WALL1:-600}
 echo "$(date) v3 ft4: 4-step rollouts"
 $T --out "$O/ft4" $COMMON --init "$O/stage1/best.pt" --n-steps 4 --batch 4 --lr 5e-5 --warmup 200 \
-  --epochs ${EPOCHS4:-6} --rollout-steps 40 --input-noise 0.01 --walltime-min ${WALL4:-240}
+  --epochs ${EPOCHS4:-3} --rollout-steps 40 --input-noise 0.01 --walltime-min ${WALL4:-240}
 echo "$(date) v3 ft8: 8-step rollouts"
 $T --out "$O/ft8" $COMMON --init "$O/ft4/best.pt" --n-steps 8 --batch 2 --lr 2e-5 --warmup 100 \
-  --epochs ${EPOCHS8:-3} --rollout-steps 40 --walltime-min ${WALL8:-300}
+  --epochs ${EPOCHS8:-1} --rollout-steps 40 --walltime-min ${WALL8:-300}
 echo "$(date) eval"
 $BIN/python -m vit_interp.evaluate "$O/ft8/best.pt" "$O/eval-ft8" --data $D --members ${NENS_EVAL:-4} --seed 0 || true
 echo "$(date) done"

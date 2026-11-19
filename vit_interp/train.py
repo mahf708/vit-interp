@@ -81,8 +81,9 @@ def main():
     p.add_argument("--noise-type", default="gaussian", choices=["gaussian", "isotropic"])
     p.add_argument("--loss", default="mse", choices=["mse", "ensemble"])
     p.add_argument("--n-ensemble", type=int, default=1, help="members per sample (ensemble loss)")
-    p.add_argument("--crps-weight", type=float, default=0.9)
-    p.add_argument("--energy-weight", type=float, default=0.1)
+    p.add_argument("--crps-weight", type=float, default=1.0)
+    p.add_argument("--energy-weight", type=float, default=0.0,
+                   help="ACE adds 0.1 x a spectral energy score; off by default (CRPS alone)")
     p.add_argument("--crps-alpha", type=float, default=1.0, help="1: fair CRPS; <1: almost fair")
     a = p.parse_args()
     t_start = time.time()
@@ -165,7 +166,17 @@ def main():
         epoch, step, best = ck["epoch"], ck["step"], ck["best"]
         log(f"resumed at epoch {epoch} step {step}")
     elif a.init:
-        em.load_state_dict(torch.load(a.init, map_location=dev, weights_only=False)["state_dict"])
+        sd = torch.load(a.init, map_location=dev, weights_only=False)["state_dict"]
+        # A deterministic (v2) checkpoint has no noise-conditioning weights; they are
+        # zero-initialized, so a stochastic model started from it is exactly that model.
+        # Anything else missing or unexpected is still an error.
+        missing, unexpected = em.load_state_dict(sd, strict=False)
+        missing = [k for k in missing if not k.startswith("corrector.")]  # never saved: built from meta
+        noise_only = all(".W_scale." in k or ".W_bias." in k or "noise" in k for k in missing)
+        if unexpected or not noise_only:
+            raise RuntimeError(f"--init mismatch: missing {missing}, unexpected {unexpected}")
+        if missing:
+            log(f"--init: {len(missing)} noise-conditioning tensors start at zero (from a deterministic model)")
         if ema is not None:
             ema = {k: v.detach().clone().float() for k, v in em.net.state_dict().items()}
         log(f"initialized from {a.init}")
