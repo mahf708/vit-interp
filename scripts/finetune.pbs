@@ -1,0 +1,26 @@
+#!/bin/bash
+# Rollout fine-tuning of a one-step checkpoint: 4-step then 8-step autoregressive loss.
+#   qsub -v INIT=.../best.pt,OUT=.../ft scripts/finetune.pbs        (from ~/vit-interp)
+#PBS -A E3SM
+#PBS -q gpu
+#PBS -N vit-ft
+#PBS -l select=1:ngpus=4
+#PBS -l walltime=06:00:00
+#PBS -j oe
+#PBS -o logs/
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$HOME/vit-interp}"
+INIT=${INIT:?set INIT}
+OUT=${OUT:?set OUT}
+mkdir -p "$OUT"
+{ git rev-parse HEAD; git status --short; } > "$OUT/VERSION" 2>/dev/null || true
+export OMP_NUM_THREADS=4
+echo "$(date) ft4: 4-step rollouts from $INIT"
+.venv/bin/torchrun --standalone --nproc-per-node 4 -m vit_interp.train --out "$OUT/ft4" \
+  --init "$INIT" --n-steps 4 --batch 4 --lr ${LR4:-1e-4} --warmup 200 --epochs ${EPOCHS4:-6} \
+  --rollout-steps 40 --walltime-min ${WALL4:-170}
+echo "$(date) ft8: 8-step rollouts"
+.venv/bin/torchrun --standalone --nproc-per-node 4 -m vit_interp.train --out "$OUT/ft8" \
+  --init "$OUT/ft4/best.pt" --n-steps 8 --batch 2 --lr ${LR8:-3e-5} --warmup 100 --epochs ${EPOCHS8:-4} \
+  --rollout-steps 40 --walltime-min ${WALL8:-150}
+echo "$(date) done"

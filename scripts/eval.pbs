@@ -1,0 +1,17 @@
+#!/bin/bash
+# Skill evaluation of a checkpoint: a free-running year and 10-day forecasts.
+#   qsub -v CKPT=/lcrc/.../runs/RUN/stage1/best.pt,OUT=/lcrc/.../runs/RUN/eval-stage1 scripts/eval.pbs
+# Optional: YEAR (default 2010), DAYS (365), NSTARTS (8), LEAD (10)
+#PBS -A E3SM
+#PBS -q gpu
+#PBS -N vit-eval
+#PBS -l select=1:ngpus=1
+#PBS -l walltime=02:00:00
+#PBS -j oe
+#PBS -o logs/
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$HOME/vit-interp}"
+: "${CKPT:?set CKPT}" "${OUT:?set OUT}"
+nvidia-smi -L
+.venv/bin/python -m vit_interp.evaluate "$CKPT" "$OUT" --year "${YEAR:-2010}" --days "${DAYS:-365}" \
+  --n-starts "${NSTARTS:-8}" --lead-days "${LEAD:-10}"
