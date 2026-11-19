@@ -233,3 +233,16 @@ def test_places_that_do_not_exist_are_refused(tokens):
         tokens.run(state, 0)
     with pytest.raises(RequestError):
         tokens.run(tokens.initial_state(199), 5)
+
+
+def test_a_unique_prefix_of_a_time_label_is_a_start(system):
+    times = system._times
+    full = system.states([times[3]])
+    short = system.states([times[3][:13]])  # "YYYY-MM-DDTHH"
+    import numpy as np
+
+    np.testing.assert_array_equal(system.fields(full)["PS"], system.fields(short)["PS"])
+    from exege.core.errors import RequestError
+
+    with pytest.raises(RequestError, match="matches"):
+        system.states([times[3][:10]])  # a whole day is four times

@@ -113,13 +113,20 @@ class _Base:
 
     def _position(self, start: str | int) -> int:
         if isinstance(start, str):
-            try:
+            if start in self._times:
                 return self._times.index(start)
-            except ValueError:
+            hits = [i for i, label in enumerate(self._times) if label.startswith(start)]
+            if len(hits) == 1:  # a unique prefix: "2010-01-15T06" or "2010-01-15T06:00"
+                return hits[0]
+            if hits:
                 raise RequestError(
-                    f"no time {start!r} in {self.year}; times run {self._times[0]} .. "
-                    f"{self._times[-1]}"
-                ) from None
+                    f"{start!r} matches {len(hits)} times ({self._times[hits[0]]} .. "
+                    f"{self._times[hits[-1]]}); give the hour, e.g. {self._times[hits[0]][:13]}"
+                )
+            raise RequestError(
+                f"no time {start!r} in {self.year}; times run {self._times[0]} .. "
+                f"{self._times[-1]}"
+            )
         t = int(start)
         if not 0 <= t < len(self._times):
             raise RequestError(f"start {start} is not a position 0..{len(self._times) - 1}")
