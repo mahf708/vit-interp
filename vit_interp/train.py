@@ -49,7 +49,8 @@ def main():
     p.add_argument("--wd", type=float, default=0.05)
     p.add_argument("--epochs", type=int, default=30)
     p.add_argument("--warmup", type=int, default=1000)
-    p.add_argument("--workers", type=int, default=8)
+    p.add_argument("--workers", type=int, default=4)
+    p.add_argument("--prefetch", type=int, default=2, help="batches per worker (shared memory!)")
     p.add_argument("--val-stride", type=int, default=7, help="subsample validation windows")
     p.add_argument("--rollout-steps", type=int, default=20)
     p.add_argument("--walltime-min", type=float, default=1e9)
@@ -89,7 +90,7 @@ def main():
     roll = Trajectories(years(a.val_years), a.rollout_steps, a.data, stride=4 * 15)  # a 5-day rollout every 15 days
     sampler = DistributedSampler(train, world, rank, shuffle=True, drop_last=True) if ddp else None
     dl = DataLoader(train, a.batch, sampler=sampler, shuffle=sampler is None, num_workers=a.workers,
-                    pin_memory=True, drop_last=True, persistent_workers=True, prefetch_factor=4)
+                    pin_memory=True, drop_last=True, persistent_workers=True, prefetch_factor=a.prefetch)
     steps_per_epoch = len(dl)
     total = a.epochs * steps_per_epoch
 
