@@ -82,7 +82,7 @@ VERSIONS = [
     },
     {
         "name": "v3",
-        "title": "+ noise-conditioned LayerNorms (stochastic), CRPS + energy-score loss",
+        "title": "+ noise-conditioned LayerNorms (stochastic), CRPS loss",
         "run": "vit3-p4-d384-l8",
         "checkpoint": "vit-p4-d384-l8/release/v3.pt",
         "headline_eval": "eval-ft8",
@@ -90,11 +90,12 @@ VERSIONS = [
         "evals": [("ensemble, rollout-tuned", "eval-ft8")],
         "recipe": [
             "As v2, plus noise-conditioned LayerNorms (per-token noise embedding modulates every norm's scale and shift; zero-initialized), as in ACE2S.",
-            "Loss: ACE's ensemble loss, 0.9 × CRPS + 0.1 × energy score, over 2 members per sample.",
+            "Loss: fair CRPS over 2 members per sample, replacing MSE (ACE adds 0.1 × a spectral energy score; we leave it out: CRPS is the proper per-point score that calibrates the ensemble, and our spectral transform is not ACE's).",
+            "Training: starts from v2's one-step checkpoint (the noise weights start at zero, so it starts as v2), then 1 → 4 → 8-step stages as in v1 and v2.",
             "Evaluation: ensemble-mean skill, CRPS and spread–skill.",
             "Code: branch <code>v3-stochastic</code> of vit-interp.",
         ],
-        "changes": "stochastic (conditional norms); CRPS + energy-score loss",
+        "changes": "stochastic (noise-conditioned norms); ensemble CRPS loss instead of MSE",
     },
 ]
 
