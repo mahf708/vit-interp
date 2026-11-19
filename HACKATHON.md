@@ -36,7 +36,7 @@ $ exege circuits prune   --adapter vit-interp --source $CKPT --field V_3 --lat 4
     --base 2010-01-15T00 --source-starts 2010-01-20T00 --tau 0.02 --out circuit.json
 $ exege laws rossby --adapter vit-interp --source $CKPT --u U_2,U_3,U_4 --v V_2,V_3,V_4 \
     --observe V_3 --ps PS --phi0 45 --starts 0,60,120,180 --score correlation
-$ exege laws rossby ... --search --control 30,90,150,210      # which heads/MLPs carry it
+$ exege laws rossby ... --search --by-block --control 30,90,150,210   # which blocks carry it
 ```
 
 Each runs in seconds to a minute on one A100 (a prune is 513 patched steps, about 45 s).

@@ -32,10 +32,10 @@ for ub in U_3 U_5; do
   $X laws rossby $SYS $LEVELS --phi0 45 --starts $STARTS --score correlation --u-bar $ub --out "$OUT/rossby_corr_phi45_$ub.json"
 done
 echo "== $(date +%T) LAWFUL search at 45N, correlation score (4 states, control)"
-/usr/bin/time -f "%e s" $X laws rossby $SYS $LEVELS --phi0 45 --starts 0,120,240,360 --search --score correlation \
+/usr/bin/time -f "%e s" $X laws rossby $SYS $LEVELS --phi0 45 --starts 0,120,240,360 --search --by-block --score correlation \
   --taus 0.3,0.5,0.7,0.9 --control 60,180,300,420 --out "$OUT/rossby_search_corr_phi45.json"
 echo "== $(date +%T) LAWFUL search at 45S with Doppler, eq. 10 (4 states, control)"
-/usr/bin/time -f "%e s" $X laws rossby $SYS $LEVELS --phi0 -45 --doppler --starts 0,120,240,360 --search \
+/usr/bin/time -f "%e s" $X laws rossby $SYS $LEVELS --phi0 -45 --doppler --starts 0,120,240,360 --search --by-block \
   --taus 0.3,0.5,0.7,0.9 --control 60,180,300,420 --out "$OUT/rossby_search_doppler_phim45.json"
 echo "== $(date +%T) LAWFUL search at 45N (4 states, control)"
 /usr/bin/time -f "%e s" $X laws rossby $SYS $LEVELS --phi0 45 --starts 0,120,240,360 --search \

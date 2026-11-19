@@ -518,16 +518,17 @@ for L in ([4, 5, 6] if FAST else range(8)):
     rows.append({"block": L, "M_suf": d.M_suf, "M_nec": d.M_nec, "d_suf": d.d_suf, "d_nec": d.d_nec})
 pd.DataFrame(rows).round(3)
 """),
-    md("LAWFUL's greedy search for τ-consistent circuits (nested, minimal). It is slow-ish: one patched sweep per candidate per step, so a few minutes on a GPU."),
+    md("LAWFUL's greedy search for τ-consistent circuits (nested, minimal). Each candidate costs one patched sweep of the family, so search **whole blocks** first (8 candidates, a couple of minutes on a GPU), then single heads inside the blocks it picks (`candidates=[...]`)."),
     code("""
+from exege.laws import blocks
 if not FAST:
-    s = search(system, system.states([0, 120, 240, 360]), law,
+    s = search(system, system.states([0, 120, 240, 360]), law, groups=blocks(system),
                taus=(0.5, 0.7, 0.9), score="correlation", controls=[system.states([60, 180, 300, 420])])
     for circ in s.circuits:
         d = circ.deviations
         print(f"tau {circ.tau}: {len(circ.components)} components  d_suf {d.d_suf:.3f}  d_nec {d.d_nec:.3f}"
               f"  control d_suf {[round(x, 3) for x in d.to_dict().get('d_suf_random', [])]}")
-        print("   ", " ".join(circ.components))
+        print("   ", " ".join(circ.units or circ.components))
 """),
     md("""
 ## The same from a terminal
@@ -537,7 +538,7 @@ $ exege circuits attribute --adapter vit-interp --source $CKPT --field V_3 --lat
     --base 2010-01-15T00 --source-starts 2010-01-20T00 --method eap
 $ exege circuits prune ... --tau 0.02 --out circuit.json
 $ exege laws rossby --adapter vit-interp --source $CKPT --u U_2,U_3,U_4 --v V_2,V_3,V_4 \\
-    --observe V_3 --ps PS --phi0 45 --starts 0,60,120,180 --score correlation --search
+    --observe V_3 --ps PS --phi0 45 --starts 0,60,120,180 --score correlation --search --by-block
 ```
 
 ## Try this
