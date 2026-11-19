@@ -1,0 +1,33 @@
+#!/bin/bash
+# Prep 2000-2010 (if needed), then train the ViT emulator on one 8xA100 node.
+#   qsub -v RUN=vit-p4-d384-l8 scripts/train.pbs        (from ~/vit-interp)
+# Extra train args for both phases: -v RUN=...,EXTRA="--depth 6 --heads 8"
+#PBS -A E3SM
+#PBS -q gpu
+#PBS -N vit-train
+#PBS -l select=1:ngpus=8
+#PBS -l walltime=12:00:00
+#PBS -j oe
+#PBS -o logs/
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$HOME/vit-interp}"
+PY=$PWD/.venv/bin/python
+RUN=${RUN:?set RUN}
+RUNS=/lcrc/globalscratch/ac.ngmahfouz/vit-interp/runs
+mkdir -p "$RUNS/$RUN"
+{ git rev-parse HEAD; git status --short; } > "$RUNS/$RUN/VERSION" 2>/dev/null || true
+nvidia-smi -L
+
+echo "$(date) prep"
+$PY -m vit_interp.data --years 2000-2010 --stats-years 2000-2009 --workers 11
+
+export OMP_NUM_THREADS=4
+echo "$(date) phase 1: one-step training"
+.venv/bin/torchrun --standalone --nproc-per-node 8 -m vit_interp.train \
+  --out "$RUNS/$RUN/stage1" --epochs ${EPOCHS1:-40} --walltime-min ${WALL1:-540} ${EXTRA:-}
+
+echo "$(date) phase 2: 4-step rollout fine-tuning"
+.venv/bin/torchrun --standalone --nproc-per-node 8 -m vit_interp.train \
+  --out "$RUNS/$RUN/stage2" --init "$RUNS/$RUN/stage1/best.pt" --n-steps 4 --batch 2 \
+  --lr 5e-5 --warmup 200 --epochs ${EPOCHS2:-4} --walltime-min ${WALL2:-120} ${EXTRA:-}
+echo "$(date) done"
