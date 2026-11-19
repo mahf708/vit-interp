@@ -1,0 +1,15 @@
+#!/bin/bash
+# Execute every notebook with full settings on one GPU; executed copies go to $PLAYGROUND_OUT.
+#   qsub -v PLAYGROUND_CKPT=/path/to/ckpt.pt notebooks/run_notebooks.pbs     (from ~/vit-interp)
+#PBS -A E3SM
+#PBS -q gpu
+#PBS -N vit-notebooks
+#PBS -l select=1:ngpus=1
+#PBS -l walltime=01:00:00
+#PBS -j oe
+#PBS -o logs/
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$HOME/vit-interp}"
+export PLAYGROUND_OUT=${PLAYGROUND_OUT:-/lcrc/globalscratch/$USER/vit-interp/notebooks-executed}
+nvidia-smi -L
+.venv/bin/python notebooks/_run.py
