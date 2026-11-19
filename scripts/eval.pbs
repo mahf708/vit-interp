@@ -13,5 +13,5 @@ set -euo pipefail
 cd "${PBS_O_WORKDIR:-$HOME/vit-interp}"
 : "${CKPT:?set CKPT}" "${OUT:?set OUT}"
 nvidia-smi -L
-.venv/bin/python -m vit_interp.evaluate "$CKPT" "$OUT" --year "${YEAR:-2010}" --days "${DAYS:-365}" \
+.venv/bin/python -m vit_interp.evaluate "$CKPT" "$OUT" ${CORRECT:+--correct ${CORRECT//+/,}} --year "${YEAR:-2010}" --days "${DAYS:-365}" \
   --n-starts "${NSTARTS:-8}" --lead-days "${LEAD:-10}"
