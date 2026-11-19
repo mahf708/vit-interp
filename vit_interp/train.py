@@ -155,7 +155,10 @@ def main():
         ema = {k: v.detach().clone().float() for k, v in em.net.state_dict().items()}
     if (out / "latest.pt").exists():
         ck = torch.load(out / "latest.pt", map_location=dev, weights_only=False)
-        em.load_state_dict(ck["state_dict"])
+        missing, unexpected = em.load_state_dict(ck["state_dict"], strict=False)
+        missing = [k for k in missing if not k.startswith("corrector.")]  # never saved: built from meta
+        if missing or unexpected:
+            raise RuntimeError(f"resume mismatch: missing {missing}, unexpected {unexpected}")
         if ema is not None:
             ema = {k[len("net."):]: v.clone().float() for k, v in ck["state_dict"].items()
                    if k.startswith("net.")}
