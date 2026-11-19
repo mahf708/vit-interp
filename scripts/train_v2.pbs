@@ -1,5 +1,5 @@
 #!/bin/bash
-# v2: 1990-2009 with diagnostics, ACE-style correctors in the loop, conv head, EMA, input noise;
+# v2: 1980-2009 (TRAIN_YEARS) with diagnostics, ACE-style correctors in the loop, conv head, EMA, input noise;
 # one-step training, then 4- and 8-step rollout fine-tuning, then the year-long evaluation.
 #   qsub -W depend=afterok:<prep job> -v RUN=vit2-p4-d384-l8 scripts/train_v2.pbs
 #PBS -A E3SM
@@ -17,7 +17,7 @@ O=/lcrc/globalscratch/ac.ngmahfouz/vit-interp/runs/$RUN
 mkdir -p "$O"
 { git rev-parse HEAD; git status --short; } > "$O/VERSION" 2>/dev/null || true
 export OMP_NUM_THREADS=4
-COMMON="--data $D --train-years 1990-2009 --val-years 2010-2010 --head-conv 3 --ema 0.999
+COMMON="--data $D --train-years ${TRAIN_YEARS:-1980-2009} --val-years 2010-2010 --head-conv 3 --ema 0.999
   --corrector dry_air,positive,moisture,energy --unaccounted-heating ${HEAT:-0.6}"
 T=".venv/bin/torchrun --standalone --nproc-per-node 4 -m vit_interp.train"
 
