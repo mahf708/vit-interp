@@ -354,6 +354,9 @@ def main():
         if stop:
             save("latest.pt")
             log("walltime budget reached; saved latest.pt")
+            if not (out / "best.pt").exists():  # a stage cut short before its first validation
+                save("best.pt")
+                log("no validated best.pt yet: saved these (unvalidated) weights as best.pt too")
             break
         epoch += 1
         with _ema_weights():
