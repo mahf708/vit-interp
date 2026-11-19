@@ -27,7 +27,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .data import ALL_NAMES, DATA_ROOT, N_PROG, PROG_NAMES, Stats
+from .data import ALL_NAMES, DATA_ROOT, N_ALL, N_PROG, PROG_NAMES, Stats
 from .emulator import OCNFRAC, TS, Emulator
 
 MAP_VARS = ["PS", "TS", "T_7", "T_3", "U_3", "V_3", "U_7", "specific_total_water_7"]
@@ -136,7 +136,7 @@ def free_run(step, a, times, n_steps, w, dev, log=print):
     done = 0
     t0 = time.time()
     for t in range(n_steps):
-        forcing = _to(dev, a[t][None, N_PROG:])
+        forcing = _to(dev, a[t][None, N_PROG:N_ALL])
         truth = _to(dev, a[t + 1][None])
         state = _prescribe(step(state, forcing), truth)
         ge, gt = gmean(state[0]), gmean(truth[0, :N_PROG])
@@ -192,7 +192,7 @@ def skill(step, a, times, starts, lead, w, clim, dev):
         x0 = np.asarray(a[s, vi], dtype=np.float64)
         for l in range(lead):
             truth = _to(dev, a[s + l + 1][None])
-            state = _prescribe(step(state, _to(dev, a[s + l][None, N_PROG:])), truth)
+            state = _prescribe(step(state, _to(dev, a[s + l][None, N_PROG:N_ALL])), truth)
             pred = state[0, vi].double().cpu().numpy()
             y = truth[0, vi].double().cpu().numpy()
             c = clim[mon[s + l + 1] - 1].astype(np.float64)

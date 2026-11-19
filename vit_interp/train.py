@@ -3,6 +3,14 @@
     torchrun --nproc-per-node 8 -m vit_interp.train --out RUN_DIR [options]
 
 Resumes from RUN_DIR/latest.pt if present, and stops cleanly before --walltime-min.
+
+v2 options (all off by default, so v1 runs are unchanged): a dataset with diagnostics
+(meta["diag_names"]) makes the model predict them too; --corrector puts ACE-style
+conservation in the loop (the loss is taken on corrected outputs, as in ACE); --input-noise
+perturbs the prognostic inputs (targets are relative to the perturbed state, so the model
+learns to correct small errors); --ema keeps an exponential moving average of the weights,
+which is what validation uses and what checkpoints carry as ``state_dict`` (the raw weights
+are kept as ``raw_net`` for resuming); --head-conv adds a smoothing convolution to the head.
 """
 
 from __future__ import annotations
@@ -56,6 +64,13 @@ def main():
     p.add_argument("--walltime-min", type=float, default=1e9)
     p.add_argument("--init", default=None, help="weights to start from (fine-tuning)")
     p.add_argument("--compile", action="store_true")
+    p.add_argument("--head-conv", type=int, default=0, help="k x k output convolution (0: none)")
+    p.add_argument("--ema", type=float, default=0.0, help="EMA decay of the weights (0: off)")
+    p.add_argument("--input-noise", type=float, default=0.0,
+                   help="std of noise on prognostic inputs, in units of each field's std")
+    p.add_argument("--corrector", default="",
+                   help="comma list of dry_air,positive,moisture,energy (ACE-style, in the loop)")
+    p.add_argument("--unaccounted-heating", type=float, default=0.0, help="W/m2, for energy")
     a = p.parse_args()
     t_start = time.time()
 
@@ -80,9 +95,21 @@ def main():
 
     meta = json.loads((Path(a.data) / "meta.json").read_text())
     stats = Stats(a.data)
-    cfg = ViTConfig(in_chans=N_ALL, out_chans=N_PROG, img_size=(180, 360), patch=a.patch,
-                    dim=a.dim, depth=a.depth, heads=a.heads, mlp_ratio=a.mlp_ratio)
+    diag_names = meta.get("diag_names", [])
+    cfg = ViTConfig(in_chans=N_ALL, out_chans=N_PROG + len(diag_names), img_size=(180, 360),
+                    patch=a.patch, dim=a.dim, depth=a.depth, heads=a.heads, mlp_ratio=a.mlp_ratio,
+                    head_conv=a.head_conv)
     em = Emulator(cfg, stats, meta["lat"]).to(dev)
+    flags = {f for f in a.corrector.split(",") if f}
+    if flags:
+        from .corrector import Corrector, CorrectorConfig
+
+        ccfg = CorrectorConfig(**{k: k in flags for k in ("dry_air", "positive", "moisture", "energy")},
+                               unaccounted_heating=a.unaccounted_heating)
+        em.corrector = Corrector(ccfg, meta["lat"], meta["ak"], meta["bk"], diag_names=diag_names).to(dev)
+        log(f"corrector in the loop: {sorted(flags)}")
+    if diag_names:
+        log(f"diagnostics predicted: {', '.join(diag_names)}")
     log(f"params: {sum(p.numel() for p in em.net.parameters()) / 1e6:.2f} M, tokens {cfg.n_tokens}")
 
     train = Trajectories(years(a.train_years), a.n_steps, a.data)
@@ -99,39 +126,81 @@ def main():
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: min(1.0, (s + 1) / a.warmup) * 0.5 * (1 + math.cos(math.pi * min(s, total) / total)))
     epoch, step, best = 0, 0, float("inf")
+    ema = None
+    if a.ema:
+        ema = {k: v.detach().clone().float() for k, v in em.net.state_dict().items()}
     if (out / "latest.pt").exists():
         ck = torch.load(out / "latest.pt", map_location=dev, weights_only=False)
         em.load_state_dict(ck["state_dict"])
+        if ema is not None:
+            ema = {k[len("net."):]: v.clone().float() for k, v in ck["state_dict"].items()
+                   if k.startswith("net.")}
+        if "raw_net" in ck:
+            em.net.load_state_dict(ck["raw_net"])
         opt.load_state_dict(ck["opt"])
         sched.load_state_dict(ck["sched"])
         epoch, step, best = ck["epoch"], ck["step"], ck["best"]
         log(f"resumed at epoch {epoch} step {step}")
     elif a.init:
         em.load_state_dict(torch.load(a.init, map_location=dev, weights_only=False)["state_dict"])
+        if ema is not None:
+            ema = {k: v.detach().clone().float() for k, v in em.net.state_dict().items()}
         log(f"initialized from {a.init}")
 
     net = DDP(em.net, device_ids=[local]) if ddp else em.net
     fwd = torch.compile(net) if a.compile else net
 
-    def predict(x):  # physical (B, C_all, H, W) -> (next prog physical, normalized tendency)
+    def predict(x, ref=None, forcing_next=None):
+        """physical (B, 39, H, W) -> (next prog physical, normalized output, ref dry mass).
+        The output is corrected (if a corrector is attached) and re-normalized."""
         with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
             d = fwd(em.normalize(x))
-        d = d.float()
-        return x[:, :N_PROG] + d * em.res_std, d
+        nxt, diag = em.physical(x, d)
+        if em.corrector is not None:
+            nxt, diag, ref = em.corrector(x[:, :N_ALL], nxt, diag, ref, forcing_next)
+            d = em.normalized(x, nxt, diag)
+        return nxt, d.float(), ref
+
+    def target_of(x, nxt_true):
+        t = (nxt_true[:, :N_PROG] - x[:, :N_PROG]) / em.res_std
+        return torch.cat([t, em.diag_target(nxt_true)], 1) if em.n_diag else t
 
     def loss_fn(traj):
-        state, loss = traj[:, 0, :N_PROG], 0.0
+        state, loss, ref = traj[:, 0, :N_PROG], 0.0, None
         for t in range(a.n_steps):
-            x = torch.cat([state, traj[:, t, N_PROG:]], 1)
-            state, d = predict(x)
-            target = (traj[:, t + 1, :N_PROG] - x[:, :N_PROG]) / em.res_std
-            loss = loss + ((d - target) ** 2 * em.area_w).mean()
+            if a.input_noise > 0:  # perturb what the model reads; targets follow the perturbed state
+                state = state + a.input_noise * em.std[:, :N_PROG] * torch.randn_like(state)
+            x = torch.cat([state, traj[:, t, N_PROG:N_ALL]], 1)
+            state, d, ref = predict(x, ref, traj[:, t + 1, N_PROG:N_ALL])
+            loss = loss + ((d - target_of(x, traj[:, t + 1])) ** 2 * em.area_w).mean()
         return loss / a.n_steps
+
+    def em_state(use_ema: bool):
+        sd = {k: v for k, v in em.state_dict().items() if not k.startswith("corrector.")}
+        if use_ema and ema is not None:
+            sd.update({f"net.{k}": v for k, v in ema.items()})
+        return sd
+
+    class _ema_weights:  # validate with the EMA weights, then put the raw ones back
+        def __enter__(self):
+            if ema is not None:
+                self.raw = {k: v.detach().clone() for k, v in em.net.state_dict().items()}
+                em.net.load_state_dict(ema)
+
+        def __exit__(self, *exc):
+            if ema is not None:
+                em.net.load_state_dict(self.raw)
 
     def save(name):
         if rank == 0:
-            em.save(out / name, opt=opt.state_dict(), sched=sched.state_dict(), epoch=epoch,
-                    step=step, best=best, meta={"names": ALL_NAMES, "lat": meta["lat"], "lon": meta["lon"]})
+            import dataclasses as _dc
+
+            torch.save({"cfg": _dc.asdict(cfg), "state_dict": em_state(True),
+                        "raw_net": em.net.state_dict() if ema is not None else None,
+                        "opt": opt.state_dict(), "sched": sched.state_dict(), "epoch": epoch,
+                        "step": step, "best": best, "args": vars(a),
+                        "meta": {"names": meta["names"], "diag_names": diag_names,
+                                 "lat": meta["lat"], "lon": meta["lon"]}}, out / name)
 
     @torch.no_grad()
     def validate():
@@ -141,8 +210,9 @@ def main():
         idx = range(rank, len(val), world)
         for i in range(0, len(idx), a.batch):
             traj = torch.stack([torch.from_numpy(val[j]) for j in list(idx)[i:i + a.batch]]).to(dev)
-            pred, d = predict(traj[:, 0])
-            target = em.residual_target(traj[:, 0], traj[:, 1])
+            x0 = traj[:, 0, :N_ALL]
+            pred, d, _ = predict(x0, None, traj[:, 1, N_PROG:N_ALL])
+            target = target_of(x0, traj[:, 1])
             lsum += float(((d - target) ** 2 * em.area_w).mean()) * len(traj)
             se += (((pred - traj[:, 1, :N_PROG]) ** 2) * em.area_w).mean((2, 3)).sum(0).double()
             n += len(traj)
@@ -152,9 +222,10 @@ def main():
         if rank == 0:
             for j in range(len(roll)):
                 traj = torch.from_numpy(roll[j])[None].to(dev)
-                state = traj[:, 0, :N_PROG]
+                state, ref = traj[:, 0, :N_PROG], None
                 for t in range(a.rollout_steps):
-                    state, _ = predict(torch.cat([state, traj[:, t, N_PROG:]], 1))
+                    state, _, ref = predict(torch.cat([state, traj[:, t, N_PROG:N_ALL]], 1), ref,
+                                            traj[:, t + 1, N_PROG:N_ALL])
                     rse[t] += ((state - traj[:, t + 1, :N_PROG]) ** 2 * em.area_w).mean((0, 2, 3)).double()
                 nr += 1
         tot = torch.tensor([lsum, n], device=dev, dtype=torch.float64)
@@ -181,6 +252,13 @@ def main():
             gn = torch.nn.utils.clip_grad_norm_(em.net.parameters(), 1.0)
             opt.step()
             sched.step()
+            if ema is not None:
+                with torch.no_grad():
+                    for k, v in em.net.state_dict().items():
+                        if v.dtype.is_floating_point:
+                            ema[k].mul_(a.ema).add_(v.float(), alpha=1 - a.ema)
+                        else:
+                            ema[k].copy_(v)
             step += 1
             seen += 1
             if step % 50 == 0:
@@ -195,7 +273,8 @@ def main():
             log("walltime budget reached; saved latest.pt")
             break
         epoch += 1
-        vloss, rmse1, rmser = validate()
+        with _ema_weights():
+            vloss, rmse1, rmser = validate()
         if vloss < best:
             best = vloss
             save("best.pt")

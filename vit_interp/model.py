@@ -19,6 +19,11 @@ Hook points (names follow TransformerLens):
     blocks.{i}.hook_attn_out, blocks.{i}.hook_mlp_out   (B, N, D)
     blocks.{i}.mlp.hook_pre / hook_post                 (B, N, D_mlp)
     ln_final.hook_normalized, hook_out_tokens           (B, N, C_out*p*p)
+    hook_out_conv                                       (B, C_out, H, W)  [head_conv > 0 only]
+
+``head_conv = k > 0`` adds one k x k convolution after un-patchifying (circular in longitude,
+edge-padded in latitude), initialized to the identity: it lets the output be smooth across
+patch seams. It sits after the residual stream's last reader, so circuits are unchanged.
 """
 
 from __future__ import annotations
@@ -44,6 +49,7 @@ class ViTConfig:
     depth: int = 8
     heads: int = 6
     mlp_ratio: float = 4.0
+    head_conv: int = 0  # k > 0: a k x k convolution on the full-resolution output
 
     @property
     def grid(self) -> tuple[int, int]:
@@ -166,6 +172,13 @@ class ViT(nn.Module):
         self.head = nn.Linear(cfg.dim, cfg.out_chans * p * p)
         nn.init.zeros_(self.head.weight)  # start at persistence
         nn.init.zeros_(self.head.bias)
+        if cfg.head_conv:
+            k = cfg.head_conv
+            self.out_conv = nn.Conv2d(cfg.out_chans, cfg.out_chans, k, bias=False)
+            with torch.no_grad():  # identity: the plain head, until training says otherwise
+                self.out_conv.weight.zero_()
+                self.out_conv.weight[torch.arange(cfg.out_chans), torch.arange(cfg.out_chans),
+                                     k // 2, k // 2] = 1.0
 
     # (B, C, H, W) <-> (B, N, C*p*p), tokens in row-major (lat, lon) order
     def patchify(self, x):
@@ -188,7 +201,13 @@ class ViT(nn.Module):
 
     def unembed(self, r, ctx: _Ctx):
         t = ctx("hook_out_tokens", self.head(self.ln_final.forward_ctx(r, ctx, "ln_final")))
-        return self.unpatchify(t, self.cfg.out_chans)
+        y = self.unpatchify(t, self.cfg.out_chans)
+        if self.cfg.head_conv:
+            h = self.cfg.head_conv // 2
+            y = F.pad(y, (h, h, 0, 0), mode="circular")  # longitude wraps
+            y = F.pad(y, (0, 0, h, h), mode="replicate")  # latitude does not
+            y = ctx("hook_out_conv", self.out_conv(y))
+        return y
 
     def forward(self, x, hooks: dict[str, Hook] | None = None, cache: dict | None = None,
                 names: set[str] | None = None):

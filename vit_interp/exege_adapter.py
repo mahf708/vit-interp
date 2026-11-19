@@ -44,7 +44,7 @@ from exege.latents.source import LatentInfo, LayerInfo
 from exege.latents.steering import Hook, Rollout
 
 from . import circuits as C
-from .data import ALL_NAMES, DATA_ROOT, N_PROG, PROG_NAMES, Stats
+from .data import ALL_NAMES, DATA_ROOT, N_ALL, N_PROG, PROG_NAMES, Stats
 from .emulator import OCNFRAC, TS, Emulator
 from .model import token_latlon
 
@@ -370,7 +370,7 @@ class ViTTokens(_Base):
         fields = {n: np.empty((steps, self._grid.n_nodes)) for n in TOKEN_FIELDS}
         state = self._read(t0)[None, :N_PROG]
         for t in range(steps):
-            forcing = self._read(t0 + t)[None, N_PROG:]
+            forcing = self._read(t0 + t)[None, N_PROG:N_ALL]
             hk_t = {}
             for layer in range(depth):
                 if (layer, t) not in edits and (layer, t) not in record:
