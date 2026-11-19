@@ -73,9 +73,12 @@ Hooks follow TransformerLens names (`blocks.{i}.attn.hook_pattern`, `hook_result
 - The answer forms in **blocks 5–6**; moisture is decided last.
 - A North Pacific jet-level wind behaviour runs through **61 of 513 edges** (95% recovery),
   with a cluster in blocks 4–6.
-- Planted Rossby waves move **westward relative to the flow and faster for the longest
-  waves**, the right *shape* (r ≈ 0.98 with theory), but 3–4× the barotropic magnitude.
-  Steering level? Baroclinicity? The patch size? That is a good afternoon.
+- Planted Rossby waves move **westward relative to the jet-level flow** everywhere, but 2–6×
+  faster than barotropic theory. The *shape* across wavenumbers matches at 45°S (r = 0.92)
+  and 45°N (0.74, 0.83 with a lower steering wind), weakly at 30°N, and not at 60°N. Much
+  of the response runs through the direct (embedding → output) path. Steering level?
+  Baroclinicity? Patch size? That is a good afternoon. Results page:
+  https://web.lcrc.anl.gov/public/e3sm/diagnostic_output/ac.ngmahfouz/vit-interp/
 - Skill (release/v1, year 2010): 5-day anomaly correlation 0.87 (PS), 0.84 (T_7), 0.83
   (U_3), 0.78 (V_3); free-running with dry-air/positivity correction it holds up for ~8
   months before drifting cold. Rollout fine-tuning took the free run from 58 to 248 days.
