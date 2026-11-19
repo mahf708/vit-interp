@@ -88,7 +88,7 @@ def _read_year(year: int, arr_path: Path, max_steps: int | None = None, names=AL
     return arr, times[:T], lat
 
 
-def _prep_year(year: int, out: str, block: int = 248, max_steps: int | None = None,
+def _prep_year(year: int, out: str, block: int = 32, max_steps: int | None = None,
                names=ALL_NAMES) -> str:
     path = Path(out) / f"{year}.npy"
     tmp = Path(out) / f"{year}.partial.npy"
@@ -126,7 +126,7 @@ def prep(years: list[int], stats_years: list[int], out: str = DATA_ROOT, workers
     Path(out).mkdir(parents=True, exist_ok=True)
     todo = [y for y in years if not (Path(out) / f"{y}.npy").exists()]
     with ProcessPoolExecutor(workers) as ex:
-        jobs = [ex.submit(_prep_year, y, out, 248, None, names) for y in todo]
+        jobs = [ex.submit(_prep_year, y, out, 32, None, names) for y in todo]  # 32 steps: ~3 GB/worker in the stats pass
         for job in jobs:
             msg = job.result()
             print(msg, flush=True)
