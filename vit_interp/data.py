@@ -1,7 +1,9 @@
 """E3SMv3 1-degree AMIP data: monthly netCDF -> per-year float32 memmaps, stats, and a Dataset.
 
 Layout under DATA_ROOT:
-    {year}.npy          (T, C, 180, 360) float32, channels in ALL_NAMES order
+    {year}.npy          (T, C, 180, 360) float32, channels in meta["names"] order: the
+                        model inputs (ALL_NAMES: prognostic, then forcing), then, in a
+                        "diag" dataset, the diagnostics (DIAG_NAMES) the model may predict
     {year}.times.json   ISO time labels (noleap calendar) for axis 0
     stats.npz           area-weighted mean/std (full field) and residual std, per channel
     meta.json           names, lat, lon, years
@@ -30,12 +32,28 @@ PROG_NAMES = (
     + [f"specific_total_water_{k}" for k in LEVELS]
 )
 FORCING_NAMES = ["SOLIN", "PHIS", "LANDFRAC", "OCNFRAC", "ICEFRAC"]
-ALL_NAMES = PROG_NAMES + FORCING_NAMES
+ALL_NAMES = PROG_NAMES + FORCING_NAMES  # what the network reads
+# Diagnostics ACE also predicts (fluxes over the 6 h ending at the output time). Never inputs.
+DIAG_NAMES = [
+    "surface_precipitation_rate",
+    "LHFLX",
+    "SHFLX",
+    "surface_upward_longwave_flux",
+    "surface_upward_shortwave_flux",
+    "FLDS",
+    "FSDS",
+    "FLUT",
+    "top_of_atmos_upward_shortwave_flux",
+    "tendency_of_total_water_path_due_to_advection",
+]
+_FIRST_STEP_UNDEFINED = {"tendency_of_total_water_path_due_to_advection"}
 N_PROG = len(PROG_NAMES)
 N_ALL = len(ALL_NAMES)
+N_DIAG = len(DIAG_NAMES)
+DATA_ROOT_V2 = "/lcrc/globalscratch/ac.ngmahfouz/vit-interp/data-v2"
 
 
-def _read_year(year: int, arr_path: Path, max_steps: int | None = None):
+def _read_year(year: int, arr_path: Path, max_steps: int | None = None, names=ALL_NAMES):
     import cftime
     import netCDF4
 
@@ -48,7 +66,7 @@ def _read_year(year: int, arr_path: Path, max_steps: int | None = None):
             times += list(cftime.num2date(t[:], t.units, t.calendar))
             lat = np.asarray(d["lat"][:])
     T = sum(sizes) if max_steps is None else min(sum(sizes), max_steps)
-    arr = np.lib.format.open_memmap(arr_path, mode="w+", dtype=np.float32, shape=(T, N_ALL, 180, 360))
+    arr = np.lib.format.open_memmap(arr_path, mode="w+", dtype=np.float32, shape=(T, len(names), 180, 360))
     s = 0
     for f, n in zip(files, sizes):
         n = min(n, T - s)
@@ -56,29 +74,35 @@ def _read_year(year: int, arr_path: Path, max_steps: int | None = None):
             break
         with netCDF4.Dataset(f) as d:
             d.set_auto_mask(False)
-            for c, name in enumerate(ALL_NAMES):
+            for c, name in enumerate(names):
                 v = d[name]
-                arr[s : s + n, c] = v[:n] if v.dimensions[0] == "time" else v[:][None]
+                block = v[:n] if v.dimensions[0] == "time" else v[:][None]
+                if name in _FIRST_STEP_UNDEFINED and n > 1 and not np.isfinite(block[0]).all():
+                    # a time-difference residual: undefined at each monthly file's first step
+                    # (its previous step is in the previous file). Persist the next step's.
+                    block = np.array(block)
+                    block[0] = block[1]
+                arr[s : s + n, c] = block
         s += n
     return arr, times[:T], lat
 
 
-def _prep_year(year: int, out: str, block: int = 248, max_steps: int | None = None) -> str:
+def _prep_year(year: int, out: str, block: int = 248, max_steps: int | None = None,
+               names=ALL_NAMES) -> str:
     path = Path(out) / f"{year}.npy"
     tmp = Path(out) / f"{year}.partial.npy"
-    arr, times, lat = _read_year(year, tmp, max_steps)
+    arr, times, lat = _read_year(year, tmp, max_steps, names)
+    C = len(names)
     T = arr.shape[0]
-    if not np.isfinite(arr[:: max(1, T // 50)]).all():
-        raise ValueError(f"{year}: non-finite values")
+    for s0 in range(0, T, 124):
+        if not np.isfinite(arr[s0 : s0 + 2]).all():
+            raise ValueError(f"{year}: non-finite values near step {s0}")
     arr.flush()
 
     # area-weighted partial sums for stats (float64)
     w = np.cos(np.deg2rad(lat))[:, None] * np.ones((1, 360))
     w = w / w.sum()
-    s1 = np.zeros(N_ALL)
-    s2 = np.zeros(N_ALL)
-    r1 = np.zeros(N_ALL)
-    r2 = np.zeros(N_ALL)
+    s1, s2, r1, r2 = (np.zeros(C) for _ in range(4))
     for s in range(0, T, block):
         x = np.asarray(arr[s : min(s + block + 1, T)], dtype=np.float64)
         xs = x[: min(block, T - s)]
@@ -95,11 +119,15 @@ def _prep_year(year: int, out: str, block: int = 248, max_steps: int | None = No
     return f"{year}: {T} steps"
 
 
-def prep(years: list[int], stats_years: list[int], out: str = DATA_ROOT, workers: int = 12) -> None:
+def prep(years: list[int], stats_years: list[int], out: str = DATA_ROOT, workers: int = 12,
+         diag: bool = False) -> None:
+    names = ALL_NAMES + (DIAG_NAMES if diag else [])
     Path(out).mkdir(parents=True, exist_ok=True)
     todo = [y for y in years if not (Path(out) / f"{y}.npy").exists()]
     with ProcessPoolExecutor(workers) as ex:
-        for msg in ex.map(_prep_year, todo, [out] * len(todo)):
+        jobs = [ex.submit(_prep_year, y, out, 248, None, names) for y in todo]
+        for job in jobs:
+            msg = job.result()
             print(msg, flush=True)
     sums = [np.load(Path(out) / f"{y}.sums.npz") for y in stats_years]
     n = sum(float(s["n"]) for s in sums)
@@ -110,13 +138,18 @@ def prep(years: list[int], stats_years: list[int], out: str = DATA_ROOT, workers
     rstd = np.sqrt(np.maximum(sum(s["r2"] for s in sums) / nr - rmean**2, 0))
     std = np.where(std < 1e-8, 1.0, std)  # e.g. constant fields
     rstd = np.where(rstd < 1e-12, 1.0, rstd)
-    np.savez(Path(out) / "stats.npz", mean=mean, std=std, res_std=rstd, names=np.array(ALL_NAMES))
+    np.savez(Path(out) / "stats.npz", mean=mean, std=std, res_std=rstd, names=np.array(names))
     import netCDF4
 
     with netCDF4.Dataset(Path(NC_DIR) / f"{stats_years[0]}-01.nc") as d:
         lat, lon = np.asarray(d["lat"][:]), np.asarray(d["lon"][:])
+        ak = [float(d[f"ak_{k}"][...]) for k in range(9)]  # hybrid interfaces, top to surface:
+        bk = [float(d[f"bk_{k}"][...]) for k in range(9)]  # p_k = ak_k + bk_k * PS
     meta = dict(
-        names=ALL_NAMES,
+        names=names,
+        diag_names=DIAG_NAMES if diag else [],
+        ak=ak,
+        bk=bk,
         prog_names=PROG_NAMES,
         forcing_names=FORCING_NAMES,
         lat=lat.tolist(),
@@ -127,16 +160,19 @@ def prep(years: list[int], stats_years: list[int], out: str = DATA_ROOT, workers
         timestep_seconds=21600,
     )
     (Path(out) / "meta.json").write_text(json.dumps(meta))
-    for name, m, s, r in zip(ALL_NAMES, mean, std, rstd):
+    for name, m, s, r in zip(names, mean, std, rstd):
         print(f"{name:26s} mean {m: .4e} std {s:.4e} res_std {r:.4e}")
 
 
 class Stats:
     def __init__(self, root: str = DATA_ROOT):
         st = np.load(Path(root) / "stats.npz")
-        self.mean = st["mean"].astype(np.float32)
-        self.std = st["std"].astype(np.float32)
+        # inputs: the first N_ALL channels; diagnostics (if any) after them
+        self.mean = st["mean"][:N_ALL].astype(np.float32)
+        self.std = st["std"][:N_ALL].astype(np.float32)
         self.res_std = st["res_std"][:N_PROG].astype(np.float32)
+        self.diag_mean = st["mean"][N_ALL:].astype(np.float32)
+        self.diag_std = st["std"][N_ALL:].astype(np.float32)
 
 
 class Trajectories:
@@ -172,10 +208,11 @@ if __name__ == "__main__":
     p.add_argument("--stats-years", default="2000-2009")
     p.add_argument("--out", default=DATA_ROOT)
     p.add_argument("--workers", type=int, default=12)
+    p.add_argument("--diag", action="store_true", help="also store DIAG_NAMES (v2 datasets)")
     a = p.parse_args()
 
     def rng(s):
         lo, hi = (int(v) for v in s.split("-"))
         return list(range(lo, hi + 1))
 
-    prep(rng(a.years), rng(a.stats_years), a.out, a.workers)
+    prep(rng(a.years), rng(a.stats_years), a.out, a.workers, a.diag)
