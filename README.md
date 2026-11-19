@@ -81,3 +81,24 @@ $ exege app --latents /lcrc/.../archives/
 ## Tests
 
 `.venv/bin/python -m pytest -q tests`
+
+## v3: a stochastic emulator (branch `v3-stochastic`)
+
+Off by default; v1/v2 checkpoints load and run unchanged.
+
+- `--noise-dim d` (`ViTConfig.noise_dim`): every LayerNorm becomes noise-conditioned,
+  `LN(x) * (1 + W_scale(z)) + W_bias(z)` with per-token noise `z` (`--noise-type gaussian`, ACE's
+  default, or `isotropic`), as ACE2S's ConditionalLayerNorm; zero-initialized, so a fresh model is
+  the plain one. The residual stream and every hook are unchanged; new hooks `hook_noise`,
+  `{ln}.hook_cond_scale`, `{ln}.hook_cond_bias`.
+- `--loss ensemble --n-ensemble n`: ACE's EnsembleLoss (fair CRPS + spectral energy score,
+  `--crps-weight 0.9 --energy-weight 0.1`) instead of MSE; validation reports the ensemble mean's
+  RMSE, CRPS and the spread/skill ratio. `vit_interp/ensemble.py` holds the scores and a
+  Gauss-Legendre spherical-harmonic transform.
+- `Emulator.ensemble(x, n, seed)`, `rollout(..., seed=)`; `evaluate --members N --seed S`.
+- exege adapters: a stochastic model's noise is one field drawn from the adapter's `seed`
+  option and shared by every run (patching stays exact; responses are measured under common
+  random numbers); `Intervenable.run(noise_seed=...)` draws step t's noise from (seed, t), and no
+  seed means zero noise.
+- `scripts/train_v3.pbs`: v2's pipeline with 32 noise channels, 2 members, ensemble loss. Submit
+  from this worktree (`cd ~/vit-interp-v3 && qsub -v RUN=vit3-p4-d384-l8 scripts/train_v3.pbs`).

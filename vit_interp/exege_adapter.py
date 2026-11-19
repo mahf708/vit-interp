@@ -75,6 +75,7 @@ class _Base:
         device: str | None = None,
         dtype: str = "float32",
         batch_limit: int | None = None,
+        seed: int = 0,
     ) -> None:
         path = Path(source)
         if not path.is_file():
@@ -102,7 +103,15 @@ class _Base:
         self.epoch = ck.get("epoch")
         self.year = year
         self.batch_limit = batch_limit
-        self._options = {"data": str(data), "year": year, "dtype": dtype}
+        self.seed = int(seed)
+        self._options = {"data": str(data), "year": year, "dtype": dtype, "seed": self.seed}
+        # Stochastic models: one noise field, a function of ``seed`` alone, used by every run
+        # (plain, source and patched alike), so patching stays exact and a perturbation's
+        # response is measured under common random numbers.
+        self._noise = None
+        if self.cfg.noise_dim:
+            g = torch.Generator().manual_seed(self.seed)
+            self._noise = self.em.net.sample_noise(1, "cpu", g).to(self.device, self.dtype)
 
     # -- shared --
 
@@ -132,12 +141,19 @@ class _Base:
             raise RequestError(f"start {start} is not a position 0..{len(self._times) - 1}")
         return t
 
-    def _plain(self, x: torch.Tensor, hooks=None) -> torch.Tensor:
+    def _noise_for(self, batch: int, noise=None):
+        if not self.cfg.noise_dim:
+            return None
+        z = self._noise if noise is None else noise
+        return z.expand(batch, *z.shape[1:])
+
+    def _plain(self, x: torch.Tensor, hooks=None, noise=None) -> torch.Tensor:
         """Next prognostic state, in the state's own precision (Emulator.step casts the
-        tendency to float32, which would break float64 exactness)."""
+        tendency to float32, which would break float64 exactness). Only the prognostic part of
+        the output (v2 models also write diagnostics after it)."""
         with self._ctx():
-            d = self.em.net(self.em.normalize(x), hooks=hooks)
-        return x[:, :N_PROG] + d.to(x.dtype) * self.em.res_std
+            d = self.em.net(self.em.normalize(x), hooks=hooks, noise=self._noise_for(x.shape[0], noise))
+        return x[:, :N_PROG] + d[:, :N_PROG].to(x.dtype) * self.em.res_std
 
     def _read(self, t: int) -> torch.Tensor:
         return torch.from_numpy(np.array(self._arr[t])).to(self.device, self.dtype)
@@ -248,8 +264,9 @@ class ViTEmulator(_Base):
     def _edge_step(self, state: ViTState, source: ViTState, mask: torch.Tensor) -> torch.Tensor:
         em = self.em
         with self._ctx():
-            corrupt = C.sender_outputs(em.net, em.normalize(source.x))
-            d = C.edge_forward(em.net, em.normalize(state.x), corrupt, mask)
+            z = self._noise_for(state.x.shape[0])
+            corrupt = C.sender_outputs(em.net, em.normalize(source.x), noise=z)
+            d = C.edge_forward(em.net, em.normalize(state.x), corrupt, mask, noise=z)[:, :N_PROG]
         keep = mask[self._embed, self._out]
         skip = source.x[:, :N_PROG] + keep * (state.x[:, :N_PROG] - source.x[:, :N_PROG])
         return skip + d.to(skip.dtype) * em.res_std
@@ -269,8 +286,9 @@ class ViTEmulator(_Base):
                 heads.setdefault(int(layer), []).append(int(h))
                 names.add(f"blocks.{int(layer)}.attn.hook_result")
         src: dict = {}
+        z = self._noise_for(state.x.shape[0])
         with self._ctx():
-            em.net(em.normalize(source.x), cache=src, names=names)
+            em.net(em.normalize(source.x), cache=src, names=names, noise=z)
         hooks = {}
         for k in names:
             if k.endswith("hook_result"):
@@ -285,7 +303,7 @@ class ViTEmulator(_Base):
             else:
                 hooks[k] = lambda t, k=k: src[k]
         with self._ctx():
-            d = em.net(em.normalize(state.x), hooks=hooks)
+            d = em.net(em.normalize(state.x), hooks=hooks, noise=z)[:, :N_PROG]
         base_x = source.x if INPUT in comps else state.x
         return base_x[:, :N_PROG] + d.to(base_x.dtype) * em.res_std
 
@@ -301,7 +319,9 @@ class _Start:
 
 class ViTTokens(_Base):
     """``latents.Intervenable`` on the 45x90 token grid; layer ``i`` is the residual
-    stream after block ``i``. Runs are deterministic: ``noise_seed`` changes nothing. A run
+    stream after block ``i``. Runs are deterministic: a deterministic model ignores ``noise_seed``; a stochastic one
+    (noise_dim > 0) draws step t's noise from ``(noise_seed, t)`` alone, and runs with no noise
+    (zero noise) without a seed. A run
     reads true forcings and prescribes the ocean's TS from the year it was opened on."""
 
     def __init__(self, source: str, **kwargs: Any) -> None:
@@ -387,7 +407,14 @@ class ViTTokens(_Base):
                     return torch.as_tensor(a, device=h.device, dtype=h.dtype)[None]
 
                 hk_t[f"blocks.{layer}.hook_resid_post"] = hook
-            nxt = self._plain(torch.cat([state, forcing], 1), hooks=hk_t or None)
+            z = None
+            if self.cfg.noise_dim:  # noise a function of (noise_seed, t) alone; no seed: no noise
+                if noise_seed is None:
+                    z = torch.zeros_like(self._noise)
+                else:
+                    g = torch.Generator().manual_seed(int(noise_seed) * 100003 + t)
+                    z = self.em.net.sample_noise(1, "cpu", g).to(self.device, self.dtype)
+            nxt = self._plain(torch.cat([state, forcing], 1), hooks=hk_t or None, noise=z)
             truth = self._read(t0 + t + 1)
             ocean = truth[OCNFRAC] > 0.5
             nxt[0, TS] = torch.where(ocean, truth[TS], nxt[0, TS])

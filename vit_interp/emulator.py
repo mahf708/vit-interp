@@ -73,16 +73,20 @@ class Emulator(nn.Module):
             d = torch.cat([d, (diag - self.diag_mean) / self.diag_std], 1)
         return d
 
-    def step(self, x, hooks=None, cache=None, names=None):
+    def step(self, x, hooks=None, cache=None, names=None, noise=None, generator=None):
         """x: physical state+forcing (B, >=39, H, W) -> (next prognostic state, normalized output).
-        Uncorrected. The normalized output holds the diagnostics after the tendencies (v2)."""
-        d = self.net(self.normalize(x), hooks=hooks, cache=cache, names=names)
+        Uncorrected. The normalized output holds the diagnostics after the tendencies (v2).
+        Stochastic models (cfg.noise_dim > 0): ``noise`` (B, N, d) or a ``generator``."""
+        d = self.net(self.normalize(x), hooks=hooks, cache=cache, names=names, noise=noise,
+                     generator=generator)
         return x[:, :N_PROG] + d[:, :N_PROG].float() * self.res_std, d
 
-    def step_corrected(self, x, ref_dry_mass=None, hooks=None, cache=None, names=None, forcing_next=None):
+    def step_corrected(self, x, ref_dry_mass=None, hooks=None, cache=None, names=None, forcing_next=None,
+                       noise=None, generator=None):
         """One step through the corrector (if attached): (next prog, diagnostics, ref_dry_mass).
         ``forcing_next`` (B, 5, H, W): forcings at the output time (ACE's energy budget uses them)."""
-        d = self.net(self.normalize(x), hooks=hooks, cache=cache, names=names)
+        d = self.net(self.normalize(x), hooks=hooks, cache=cache, names=names, noise=noise,
+                     generator=generator)
         nxt, diag = self.physical(x, d)
         if self.corrector is not None:
             nxt, diag, ref_dry_mass = self.corrector(x[:, :N_ALL], nxt, diag, ref_dry_mass, forcing_next)
@@ -90,13 +94,17 @@ class Emulator(nn.Module):
 
     @torch.no_grad()
     def rollout(self, traj, n_steps: int, prescribe_ocean_ts: bool = True, hooks_at=None, record=None,
-                correct: bool = False):
+                correct: bool = False, seed: int | None = None):
         """traj: (B, T>=n_steps+1, C, H, W) physical truth (forcings are read from it).
 
         hooks_at: optional fn(step) -> hooks dict.  record: optional set of hook names to
         cache at every step; returns (states (B, n_steps+1, N_PROG, H, W), [cache per step]).
         correct: apply the attached corrector at every step (dry air pinned to the start).
+        seed: stochastic models draw their noise from a generator with this seed (reproducible).
         """
+        gen = None
+        if seed is not None and self.cfg.noise_dim:
+            gen = torch.Generator(device=traj.device).manual_seed(int(seed))
         state = traj[:, 0, :N_PROG]
         out, caches, ref = [state], [], None
         for t in range(n_steps):
@@ -105,9 +113,10 @@ class Emulator(nn.Module):
             hooks = hooks_at(t) if hooks_at else None
             if correct and self.corrector is not None:
                 state, _, ref = self.step_corrected(x, ref, hooks=hooks, cache=cache, names=record,
-                                                    forcing_next=traj[:, t + 1, N_PROG:N_ALL])
+                                                    forcing_next=traj[:, t + 1, N_PROG:N_ALL],
+                                                    generator=gen)
             else:
-                state, _ = self.step(x, hooks=hooks, cache=cache, names=record)
+                state, _ = self.step(x, hooks=hooks, cache=cache, names=record, generator=gen)
             if prescribe_ocean_ts:  # AMIP: SST is a boundary condition
                 ocean = traj[:, t + 1, OCNFRAC] > 0.5
                 state[:, TS] = torch.where(ocean, traj[:, t + 1, TS], state[:, TS])
@@ -115,6 +124,21 @@ class Emulator(nn.Module):
             if cache is not None:
                 caches.append({k: v.detach().cpu() for k, v in cache.items()})
         return torch.stack(out, 1), caches
+
+    @torch.no_grad()
+    def ensemble(self, x, n: int, seed: int | None = None, correct: bool = False, forcing_next=None):
+        """n members of one step from each state in x (B, C, H, W): next prognostic states
+        (B, n, N_PROG, H, W). A deterministic model gives n identical members."""
+        B = x.shape[0]
+        xx = x.unsqueeze(1).expand(B, n, *x.shape[1:]).reshape(B * n, *x.shape[1:])
+        gen = torch.Generator(device=x.device).manual_seed(int(seed)) if seed is not None else None
+        if correct and self.corrector is not None:
+            fn = None if forcing_next is None else forcing_next.unsqueeze(1).expand(
+                B, n, *forcing_next.shape[1:]).reshape(B * n, *forcing_next.shape[1:])
+            nxt, _, _ = self.step_corrected(xx, forcing_next=fn, generator=gen)
+        else:
+            nxt, _ = self.step(xx, generator=gen)
+        return nxt.reshape(B, n, *nxt.shape[1:])
 
     def save(self, path, **extra):
         sd = {k: v for k, v in self.state_dict().items() if not k.startswith("corrector.")}
