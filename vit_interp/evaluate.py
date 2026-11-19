@@ -93,15 +93,25 @@ def monthly_climatology(data, years, channels, stride=2):
 # ---- the emulator, one step at a time ------------------------------------------------
 
 class Stepper:
+    """One step of the emulator; with a corrector attached to ``em``, the corrected step, with
+    the dry-air mass pinned to the value at the last ``reset`` (the start of a run)."""
+
     def __init__(self, em, device):
         self.em, self.device = em, device
+        self.ref = None
+
+    def reset(self):
+        self.ref = None
 
     @torch.no_grad()
-    def __call__(self, state, forcing):
+    def __call__(self, state, forcing, forcing_next=None):
         x = torch.cat([state, forcing], 1)
         with torch.autocast(self.device.type, dtype=torch.bfloat16, enabled=self.device.type == "cuda"):
             d = self.em.net(self.em.normalize(x))
-        return state + d.float() * self.em.res_std
+        nxt, diag = self.em.physical(x, d)
+        if self.em.corrector is not None:
+            nxt, _, self.ref = self.em.corrector(x, nxt, diag, self.ref, forcing_next)
+        return nxt
 
 
 def _to(dev, a):
@@ -138,7 +148,7 @@ def free_run(step, a, times, n_steps, w, dev, log=print):
     for t in range(n_steps):
         forcing = _to(dev, a[t][None, N_PROG:N_ALL])
         truth = _to(dev, a[t + 1][None])
-        state = _prescribe(step(state, forcing), truth)
+        state = _prescribe(step(state, forcing, truth[:, N_PROG:N_ALL]), truth)
         ge, gt = gmean(state[0]), gmean(truth[0, :N_PROG])
         if not torch.isfinite(state).all() or abs(float(ge[t7] - gt[t7])) > 30:
             blow = {"step": t + 1, "day": (t + 1) / 4, "time": times[t + 1],
@@ -188,11 +198,14 @@ def skill(step, a, times, starts, lead, w, clim, dev):
         return (xa * ya * wn).sum((-2, -1)) / np.sqrt((xa**2 * wn).sum((-2, -1)) * (ya**2 * wn).sum((-2, -1)))
 
     for i, s in enumerate(starts):
+        if hasattr(step, "reset"):
+            step.reset()
         state = _to(dev, a[s][None, :N_PROG])
         x0 = np.asarray(a[s, vi], dtype=np.float64)
         for l in range(lead):
             truth = _to(dev, a[s + l + 1][None])
-            state = _prescribe(step(state, _to(dev, a[s + l][None, N_PROG:N_ALL])), truth)
+            state = _prescribe(step(state, _to(dev, a[s + l][None, N_PROG:N_ALL]),
+                                    truth[:, N_PROG:N_ALL]), truth)
             pred = state[0, vi].double().cpu().numpy()
             y = truth[0, vi].double().cpu().numpy()
             c = clim[mon[s + l + 1] - 1].astype(np.float64)
@@ -376,6 +389,9 @@ def main(argv=None):
     p.add_argument("--n-starts", type=int, default=8)
     p.add_argument("--lead-days", type=float, default=10)
     p.add_argument("--clim-years", default=None, help="e.g. 2000-2009; default meta stats_years")
+    p.add_argument("--correct", default=None,
+                   help="corrector flags (dry_air,positive,moisture,energy); default: what the "
+                   "checkpoint was trained with; 'none' for none")
     a = p.parse_args(argv)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -388,6 +404,20 @@ def main(argv=None):
     lat, lon = np.asarray(meta["lat"]), np.asarray(meta["lon"])
     em, ck = Emulator.load(a.ckpt, Stats(a.data), lat, map_location=dev)
     em = em.to(dev).eval()
+    flags = a.correct if a.correct is not None else (ck.get("args") or {}).get("corrector", "")
+    flags = {f for f in (flags or "").split(",") if f and f != "none"}
+    if flags:
+        from .corrector import Corrector, CorrectorConfig
+
+        heat = float((ck.get("args") or {}).get("unaccounted_heating", 0.0))
+        ccfg = CorrectorConfig(**{k: k in flags for k in ("dry_air", "positive", "moisture", "energy")},
+                               unaccounted_heating=heat)
+        from .data import vertical_coordinate
+
+        ak, bk = vertical_coordinate(meta)
+        em.corrector = Corrector(ccfg, lat, ak, bk,
+                                 diag_names=meta.get("diag_names", [])).to(dev)
+        log(f"corrector: {sorted(flags)}")
     step = Stepper(em, dev)
     w = _weights(lat)
     arr, times = _arr(a.data, a.year), _times(a.data, a.year)
@@ -396,6 +426,7 @@ def main(argv=None):
         f"({n_steps / 4:.1f} days) from {times[0]} on {dev}")
 
     t0 = time.time()
+    step.reset()
     res = free_run(step, arr, times, n_steps, w, dev, log)
     log(f"free run: {res['steps']} steps in {time.time() - t0:.0f} s; blow-up: {res['blowup']}")
 

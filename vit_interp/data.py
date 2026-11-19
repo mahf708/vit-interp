@@ -164,6 +164,18 @@ def prep(years: list[int], stats_years: list[int], out: str = DATA_ROOT, workers
         print(f"{name:26s} mean {m: .4e} std {s:.4e} res_std {r:.4e}")
 
 
+def vertical_coordinate(meta: dict) -> tuple[list[float], list[float]]:
+    """(ak, bk) hybrid interface coefficients, top to surface; from meta, or (older datasets
+    without them) from the first netCDF file."""
+    if "ak" in meta and "bk" in meta:
+        return list(meta["ak"]), list(meta["bk"])
+    import netCDF4
+
+    with netCDF4.Dataset(sorted(Path(NC_DIR).glob("*.nc"))[0]) as d:
+        return ([float(d[f"ak_{k}"][...]) for k in range(9)],
+                [float(d[f"bk_{k}"][...]) for k in range(9)])
+
+
 class Stats:
     def __init__(self, root: str = DATA_ROOT):
         st = np.load(Path(root) / "stats.npz")
