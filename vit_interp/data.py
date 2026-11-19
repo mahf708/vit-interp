@@ -83,6 +83,7 @@ def _read_year(year: int, arr_path: Path, max_steps: int | None = None, names=AL
                     block = np.array(block)
                     block[0] = block[1]
                 arr[s : s + n, c] = block
+        arr.flush()  # write each month out: dirty mapped pages count against the job's memory
         s += n
     return arr, times[:T], lat
 

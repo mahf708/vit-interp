@@ -1,14 +1,14 @@
 #!/bin/bash
-# Prepare the v2 dataset: 1990-2010 with diagnostics (49 channels), stats over 1990-2009.
+# Prepare the v2 dataset: 1980-2010 with diagnostics (49 channels), stats over 1990-2009.
 #PBS -A E3SM
 #PBS -q gpu
 #PBS -N vit-prep2
-#PBS -l select=1:ngpus=1:ncpus=32
+#PBS -l select=1:ngpus=1:ncpus=32:mem=400gb
 #PBS -l walltime=03:00:00
 #PBS -j oe
 #PBS -o logs/
 set -euo pipefail
 cd "${PBS_O_WORKDIR:-$HOME/vit-interp}"
-.venv/bin/python -m vit_interp.data --years ${YEARS:-1990-2010} --stats-years 1990-2009 \
-  --out /lcrc/globalscratch/ac.ngmahfouz/vit-interp/data-v2 --diag --workers 21
+.venv/bin/python -m vit_interp.data --years ${YEARS:-1980-2010} --stats-years 1990-2009 \
+  --out /lcrc/globalscratch/ac.ngmahfouz/vit-interp/data-v2 --diag --workers ${WORKERS:-10}
 echo "$(date) done"
