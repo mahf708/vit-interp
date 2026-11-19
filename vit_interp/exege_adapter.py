@@ -137,7 +137,7 @@ class _Base:
         tendency to float32, which would break float64 exactness)."""
         with self._ctx():
             d = self.em.net(self.em.normalize(x), hooks=hooks)
-        return x[:, :N_PROG] + d.to(x.dtype) * self.em.res_std
+        return x[:, :N_PROG] + d[:, :N_PROG].to(x.dtype) * self.em.res_std
 
     def _read(self, t: int) -> torch.Tensor:
         return torch.from_numpy(np.array(self._arr[t])).to(self.device, self.dtype)
@@ -252,7 +252,7 @@ class ViTEmulator(_Base):
             d = C.edge_forward(em.net, em.normalize(state.x), corrupt, mask)
         keep = mask[self._embed, self._out]
         skip = source.x[:, :N_PROG] + keep * (state.x[:, :N_PROG] - source.x[:, :N_PROG])
-        return skip + d.to(skip.dtype) * em.res_std
+        return skip + d[:, :N_PROG].to(skip.dtype) * em.res_std
 
     def _component_step(self, state: ViTState, source: ViTState, comps: tuple[str, ...]) -> torch.Tensor:
         em = self.em
@@ -287,7 +287,7 @@ class ViTEmulator(_Base):
         with self._ctx():
             d = em.net(em.normalize(state.x), hooks=hooks)
         base_x = source.x if INPUT in comps else state.x
-        return base_x[:, :N_PROG] + d.to(base_x.dtype) * em.res_std
+        return base_x[:, :N_PROG] + d[:, :N_PROG].to(base_x.dtype) * em.res_std
 
     def _out_dict(self, nxt: torch.Tensor) -> dict[str, np.ndarray]:
         a = nxt.detach().double().cpu().numpy().reshape(nxt.shape[0], N_PROG, -1)
