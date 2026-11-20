@@ -4,6 +4,10 @@ A close-to-vanilla Vision Transformer that steps E3SMv3 (1°, AMIP) forward 6 ho
 patch tokens, 8 blocks of 6 heads, every head and MLP writing into one residual stream.
 It is small enough to take apart in an afternoon. Pick a door.
 
+**Not on LCRC?** Everything is online: `git clone https://github.com/mahf708/vit-interp && cd vit-interp && pip install -e .`.
+The first `pg.load()` fetches the released model and the 2010 inputs from Hugging Face (about 15 GB, once), and
+`--source v2` works in the exege commands below. Coding agents: point them at [`AGENTS.md`](AGENTS.md).
+
 ## 1. Notebooks (most people start here)
 
 Eight notebooks, each a few lines per cell, each ending in a **Try this** list. Setup
