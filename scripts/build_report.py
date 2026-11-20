@@ -47,7 +47,8 @@ VERSIONS = [
         "headline_eval": "eval-ft8-corrected",
         "stages": [  # (label, run subdir with metrics.jsonl)
             ("one-step, 40 epochs", "stage1"),
-            ("4-step rollouts", "ft2/ft4"),
+            ("4-step rollouts (2 epochs)", "stage2"),
+            ("4-step rollouts (6 more)", "ft2/ft4"),
             ("8-step rollouts", "ft2/ft8"),
         ],
         "evals": [  # (label, eval dir): the history of how v1 got where it is
@@ -59,7 +60,7 @@ VERSIONS = [
             "Data: 2000–2009 (10 years), 6-hourly, 34 prognostic + 5 forcing channels; validation 2010.",
             "Model: 4×4 patches (4050 tokens), 8 pre-LN blocks × 6 heads, dim 384, linear un-patchify; 16.2 M parameters.",
             "Loss: area-weighted MSE on normalized 6-h tendencies.",
-            "Training: one-step 40 epochs (lr 3e-4, cosine), then 4-step (6 epochs) and 8-step (4 epochs) rollout fine-tuning.",
+            "Training: one-step 40 epochs (lr 3e-4, cosine), then 4-step rollouts for 8 epochs (2 + 6, lr 5e-5) and 8-step for 4 (lr 3e-5). <a href=\"../training.html#v1\">Exact curriculum</a>.",
             "Inference: optional ACE-style dry-air and water-positivity correction (outside the network).",
         ],
         "changes": "baseline",
@@ -78,7 +79,7 @@ VERSIONS = [
             "Data: <b>1980–2009 (30 years)</b>, plus ACE's 10 diagnostics (precipitation, latent/sensible heat, surface and TOA radiation, moisture advection) as extra outputs.",
             "Model: as v1 plus a 3×3 output convolution after un-patchify (identity-initialized; after the circuit graph's last receiver).",
             "Loss: MSE on tendencies + diagnostics, taken <b>after ACE-style correctors</b>: dry air, positivity, moisture budget, total energy (0.6 W/m² unaccounted heating).",
-            "Training: EMA 0.999 weights; input noise (2% of each field's std); one-step 36 epochs, then 4-step (3) and 8-step (1) rollouts.",
+            "Training: EMA 0.999 weights; input noise (2% of each field's std); one-step 36 epochs (lr 3e-4), then 4-step (3 epochs, lr 5e-5) and 8-step (1, lr 2e-5) rollouts; the release is the 8-step checkpoint. <a href=\"../training.html#v2\">Exact curriculum</a>.",
         ],
         "changes": "data ×3; diagnostic outputs; correctors in the loss; output conv; EMA; input noise",
     },
@@ -95,7 +96,7 @@ VERSIONS = [
         "recipe": [
             "As v2, plus noise-conditioned LayerNorms (per-token noise embedding modulates every norm's scale and shift; zero-initialized), as in ACE2S.",
             "Loss: fair CRPS over 2 members per sample, replacing MSE (ACE adds 0.1 × a spectral energy score; we leave it out: CRPS is the proper per-point score that calibrates the ensemble, and our spectral transform is not ACE's).",
-            "Training: starts from v2's one-step checkpoint (the noise weights start at zero, so it starts as v2), then 1 → 4 → 8-step stages as in v1 and v2.",
+            "Training: starts from v2's one-step checkpoint (the noise weights start at zero, so it starts as v2): 12 more one-step epochs with CRPS (lr 3e-4), then 4-step (3, lr 5e-5) and 8-step (1, lr 2e-5). <a href=\"../training.html#v3\">Exact curriculum</a>.",
             "Evaluation: ensemble-mean skill, CRPS and spread–skill.",
             "Load: <code>pg.load(\"v3\")</code>, <code>--source v3</code> (on Hugging Face as <code>v3/v3.pt</code>).",
         ],
@@ -112,6 +113,7 @@ VERSIONS = [
         "recipe": [
             "As v3 (stochastic, CRPS over 2 members, ACE-style correctors), starting from v3's one-step checkpoint, so it parallels v3's own short-rollout stages.",
             "Rollouts: each batch a random length between 4 and 16 six-hour steps (1–4 days); every step but the last runs without gradients, and the loss is taken on the last step only (the pushforward trick; ACE's optimize_last_step_only). Memory stays at one step's worth.",
+            "Training: 4 epochs (lr 5e-5, global batch 8) from v3's one-step checkpoint (epoch 12). <a href=\"../training.html#v4\">Exact curriculum</a>.",
             "Why: rollout training was the biggest win in v1 and v2 and had not converged; with MSE, long horizons blur, but CRPS keeps the ensemble sharp.",
             "Load: <code>pg.load(\"v4\")</code>, <code>--source v4</code> (on Hugging Face as <code>v4/v4.pt</code>).",
         ],
@@ -523,7 +525,7 @@ def build(out: Path) -> None:
                 f'<div class="muted">{"then drifts" if m.get("blowup") else "stable"}</div></div></div>')
     nbs = notebooks_html(out)
     nb_list = "".join(f'<li><a href="{h}">{s}</a>: {html.escape(NB_TITLES.get(s, ""))}</li>' for s, h in nbs)
-    body = f"""<nav class="muted"><a href="#architecture">Architecture</a><a href="#versions">Versions</a><a href="#rossby">Rossby waves</a><a href="#circuits">Circuits</a><a href="#notebooks">Notebooks</a></nav>
+    body = f"""<nav class="muted"><a href="#architecture">Architecture</a><a href="training.html">Training</a><a href="#versions">Versions</a><a href="#rossby">Rossby waves</a><a href="#circuits">Circuits</a><a href="#notebooks">Notebooks</a></nav>
 <h1>Inside a ViT emulator of E3SM</h1>
 <p class="lede">A close-to-vanilla Vision Transformer that steps E3SMv3 (1°, AMIP) forward 6 hours, built to be taken apart for the
 interpretability hackathon: attention heads, circuits (Vi-CD) and physical laws (LAWFUL), with <a href="https://github.com/mahf708/exege">exege</a>. Checkpoints and latent archives are on Hugging Face:
@@ -531,7 +533,8 @@ interpretability hackathon: attention heads, circuits (Vi-CD) and physical laws 
 <a href="https://huggingface.co/datasets/mahf708/vit-interp-e3sm-latents">mahf708/vit-interp-e3sm-latents</a>
 (and the 2010 inputs, <a href="https://huggingface.co/datasets/mahf708/vit-interp-e3sm-2010">mahf708/vit-interp-e3sm-2010</a>);
 code and notebooks: <a href="https://github.com/mahf708/vit-interp">github.com/mahf708/vit-interp</a>.
-4°×4° patches (4050 tokens), 8 pre-LN blocks × 6 heads, all horizontal mixing in attention; everything evaluated on <b>2010</b>, unseen in training.</p>
+4°×4° patches (4050 tokens), 8 pre-LN blocks × 6 heads, all horizontal mixing in attention; everything evaluated on <b>2010</b>, which was never trained on (it did pick the best epoch of each stage: see <a href=\"training.html#m-select\">how checkpoints were chosen</a>).</p>
+<p><a href=\"training.html\" class=\"tag released\" style=\"font-size:.95rem;padding:4px 12px\">How the models were trained: curriculum and methods →</a></p>
 {kpis}
 {architecture_section(out)}
 <h2 id="versions">Versions</h2>
@@ -546,6 +549,8 @@ column is the older, laxer criterion (global near-surface temperature off by mor
 <h2 id="notebooks">Hackathon notebooks (executed on {current["v"]["name"]})</h2><ul>{nb_list}</ul>
 <p class="muted">Run them on Swing: <code>HACKATHON.md</code> in the vit-interp repository; the exege layers are on the
 <code>mahf708/circuits</code> branch of exege.</p>"""
+    from build_training import training_page
+    training_page(RUNS, out, _page)
     (out / "index.html").write_text(_page("ViT emulator internals", body))
     for p in out.rglob("*"):
         p.chmod(0o755 if p.is_dir() else 0o644)
