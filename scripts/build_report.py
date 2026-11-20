@@ -389,13 +389,14 @@ def versions_table(summ: list[dict]) -> str:
             html.escape(v["changes"]),
             f'<span class="tag {s["status"]}">{s["status"]}</span>',
             (f"{_fmt(o['val_loss'], '{:.3f}')} (ep {o['epoch']})" if o else "–"),
-            f"{_fmt(r1)} / {_fmt(r5, '{:.1f}')}",
+            f"{_fmt(r1)} / {_fmt(r5, '{:.1f}')}" + (
+                f" ({int(k5.split('_')[1].replace('step', '')) / 4:g}-day)" if k5 and k5 != "rmse_20step" else ""),
             (f"{s['faithful']:.0f} d" if s.get("faithful") is not None else "–"),
             (f"{m['days_run']:.0f} d" + (" (drifts)" if m.get("blowup") else "")) if m else "–",
             " / ".join(f"{m['skill'][x]['5d']['acc']:.2f}" for x in ACC_VARS) if m else "–",
         ])
     return _table(["version", "what changed", "status", "one-step val loss",
-                   "one-step U_3 RMSE: 1-step / 5-day (m/s)", "climate holds*", "free run (2010)",
+                   "first-stage U_3 RMSE: 1-step / 5-day (m/s)", "climate holds*", "free run (2010)",
                    "5-day ACC: PS / T_7 / U_3 / V_3 (final model)"], rows)
 
 
