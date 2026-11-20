@@ -1,0 +1,29 @@
+#!/bin/bash
+# Extend v3's 8-step rollout stage (the pipeline does 1 epoch): EPOCHS more epochs from ft8, then evaluate.
+#   cd ~/vit-interp-v3 && qsub -W depend=afterok:<v3 job> -v RUN=vit3-p4-d384-l8 scripts/continue_v3.pbs
+#PBS -A E3SM
+#PBS -q gpu
+#PBS -N vit3-ft8b
+#PBS -l select=1:ngpus=4
+#PBS -l walltime=10:00:00
+#PBS -j oe
+#PBS -o logs/
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$HOME/vit-interp-v3}"
+RUN=${RUN:?set RUN}
+D=/lcrc/globalscratch/ac.ngmahfouz/vit-interp/data-v2
+O=/lcrc/globalscratch/ac.ngmahfouz/vit-interp/runs/$RUN
+export OMP_NUM_THREADS=4
+export PYTHONPATH=$PWD${PYTHONPATH:+:$PYTHONPATH}
+BIN=${VENV:-$HOME/vit-interp/.venv}/bin
+$BIN/python -c "import vit_interp, sys; assert vit_interp.__file__.startswith('$PWD'), vit_interp.__file__"
+echo "$(date) v3 ft8b: ${EPOCHS:-6} more 8-step epochs"
+$BIN/torchrun --standalone --nproc-per-node 4 -m vit_interp.train --out "$O/ft8b" \
+  --data $D --train-years 1980-2009 --val-years 2010-2010 --head-conv 3 --ema 0.999 \
+  --corrector dry_air,positive,moisture,energy --unaccounted-heating 0.6 \
+  --noise-dim 32 --noise-type gaussian --loss ensemble --n-ensemble 2 --crps-weight 1.0 --energy-weight 0.0 \
+  --init "$O/ft8/best.pt" --n-steps 8 --batch 2 --lr 2e-5 --warmup 100 --epochs ${EPOCHS:-6} \
+  --rollout-steps 40 --walltime-min ${WALL:-570}
+echo "$(date) eval"
+$BIN/python -m vit_interp.evaluate "$O/ft8b/best.pt" "$O/eval-ft8b" --data $D --members ${MEMBERS:-4} --seed 0 || true
+echo "$(date) done"
