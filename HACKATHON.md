@@ -59,6 +59,11 @@ $ exege app --latents $A                                   # the local web app, 
 
 January against July is a ready-made experiment: which features are seasonal, which follow the jet?
 
+Off LCRC, the same archives and the released checkpoints are public on Hugging Face:
+[`mahf708/vit-interp-e3sm`](https://huggingface.co/mahf708/vit-interp-e3sm) (v1, v2, normalization stats) and
+[`mahf708/vit-interp-e3sm-latents`](https://huggingface.co/datasets/mahf708/vit-interp-e3sm-latents)
+(`exege latents info hf://datasets/mahf708/vit-interp-e3sm-latents/v2-2010-jan`).
+
 ## 3. Python, your own way
 
 ```python

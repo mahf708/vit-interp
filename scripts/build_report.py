@@ -496,7 +496,9 @@ def build(out: Path) -> None:
     body = f"""<nav class="muted"><a href="#architecture">Architecture</a><a href="#versions">Versions</a><a href="#rossby">Rossby waves</a><a href="#circuits">Circuits</a><a href="#notebooks">Notebooks</a></nav>
 <h1>Inside a ViT emulator of E3SM</h1>
 <p class="lede">A close-to-vanilla Vision Transformer that steps E3SMv3 (1°, AMIP) forward 6 hours, built to be taken apart for the
-interpretability hackathon: attention heads, circuits (Vi-CD) and physical laws (LAWFUL), with <a href="https://github.com/mahf708/exege">exege</a>.
+interpretability hackathon: attention heads, circuits (Vi-CD) and physical laws (LAWFUL), with <a href="https://github.com/mahf708/exege">exege</a>. Checkpoints and latent archives are on Hugging Face:
+<a href="https://huggingface.co/mahf708/vit-interp-e3sm">mahf708/vit-interp-e3sm</a> and
+<a href="https://huggingface.co/datasets/mahf708/vit-interp-e3sm-latents">mahf708/vit-interp-e3sm-latents</a>.
 4°×4° patches (4050 tokens), 8 pre-LN blocks × 6 heads, all horizontal mixing in attention; everything evaluated on <b>2010</b>, unseen in training.</p>
 {kpis}
 {architecture_section(out)}
