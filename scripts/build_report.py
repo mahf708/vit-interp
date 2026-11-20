@@ -425,126 +425,22 @@ def analysis_sections(out: Path, release: dict) -> str:
     return "".join(parts)
 
 
-ACC = "#2a78d6"  # the residual stream: what is being dissected
-
-FIG_STEP = """<figure><svg viewBox="0 0 1000 250" role="img" aria-label="One 6-hour step: the state is cut into 4-degree patches, embedded into a residual stream of 4050 tokens that passes through 8 transformer blocks, decoded back to a tendency, added to the state by a skip outside the network, corrected, and fed back as the next input." style="width:100%;height:auto;color:inherit" font-family="system-ui,sans-serif" font-size="12">
-<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
-<g fill="none" stroke="currentColor" stroke-width="1.4">
-<rect x="10" y="80" width="110" height="56" rx="6"/>
-<rect x="150" y="80" width="150" height="56" rx="6"/>
-<rect x="330" y="72" width="250" height="72" rx="8" stroke="#2a78d6" stroke-width="2.6"/>
-<rect x="620" y="80" width="130" height="56" rx="6"/>
-<circle cx="790" cy="108" r="13"/>
-<rect x="830" y="80" width="80" height="56" rx="6" stroke-dasharray="5 4"/>
-<rect x="930" y="80" width="62" height="56" rx="6"/>
-<rect x="390" y="182" width="130" height="30" rx="6" stroke-dasharray="5 4"/>
-</g>
-<g fill="none" stroke="currentColor" stroke-width="1.3" marker-end="url(#ah)">
-<line x1="120" y1="108" x2="148" y2="108"/>
-<line x1="300" y1="108" x2="328" y2="108"/>
-<line x1="580" y1="108" x2="618" y2="108"/>
-<line x1="750" y1="108" x2="775" y2="108"/>
-<line x1="803" y1="108" x2="828" y2="108"/>
-<line x1="910" y1="108" x2="928" y2="108"/>
-<path d="M65,80 L65,40 L790,40 L790,93"/>
-<path d="M961,136 L961,236 L65,236 L65,138"/>
-<line x1="455" y1="182" x2="455" y2="146" stroke-dasharray="4 3"/>
-</g>
-<g fill="currentColor" text-anchor="middle">
-<text x="65" y="104" font-weight="600">state x(t)</text><text x="65" y="122" opacity=".75">39 fields, 180×360</text>
-<text x="225" y="104" font-weight="600">4×4 patches</text><text x="225" y="122" opacity=".75">linear embed + position</text>
-<text x="455" y="100" font-weight="600" fill="#2a78d6">residual stream</text>
-<text x="455" y="118" opacity=".8">4050 tokens × 384, 8 blocks</text>
-<text x="455" y="135" opacity=".75">6 heads + 1 MLP per block</text>
-<text x="685" y="104" font-weight="600">decode → tendency</text><text x="685" y="122" font-size="11" opacity=".75">LN · linear · un-patchify</text>
-<text x="790" y="113" font-weight="600">+</text>
-<text x="870" y="104" font-weight="600">correct</text><text x="870" y="122" opacity=".75">ACE-style</text>
-<text x="961" y="113" font-weight="600">x(t+6h)</text>
-<text x="455" y="202" opacity=".85">noise (v3)</text>
-<text x="420" y="34" opacity=".8">persistence skip: outside the network</text>
-<text x="510" y="230" opacity=".8">rollout: the output is the next input (multi-step training, free runs)</text>
-<text x="530" y="168" font-size="11" opacity=".7" text-anchor="start">modulates every LayerNorm</text>
-</g></svg>
-<figcaption class="muted">One 6-hour step. The network (inside the blue residual stream plus the patch embedding and the head) predicts only the
-<b>tendency</b>; carrying the state forward (the skip) and the conservation corrections (dashed, v2+) happen outside it. That is why
-circuit and LAWFUL measurements read the network's tendency response, and why they are unaffected by the correctors.</figcaption></figure>"""
-
-FIG_BLOCK = """<figure><svg viewBox="0 0 1000 330" role="img" aria-label="One transformer block as the circuit methods see it: the residual stream is a bus; the embedding, six attention heads and the MLP each add their output to it; the block's attention input, MLP input and the output head each read the sum so far. An edge is one writer feeding one reader." style="width:100%;height:auto;color:inherit" font-family="system-ui,sans-serif" font-size="12">
-<defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
-<line x1="30" y1="170" x2="975" y2="170" stroke="#2a78d6" stroke-width="7" stroke-linecap="round"/>
-<g fill="none" stroke="currentColor" stroke-width="1.4">
-<rect x="30" y="60" width="96" height="44" rx="6"/>
-<rect x="175" y="60" width="100" height="44" rx="6"/>
-<rect x="300" y="30" width="44" height="34" rx="5"/><rect x="352" y="30" width="44" height="34" rx="5"/><rect x="404" y="30" width="44" height="34" rx="5"/>
-<rect x="456" y="30" width="44" height="34" rx="5"/><rect x="508" y="30" width="44" height="34" rx="5"/><rect x="560" y="30" width="44" height="34" rx="5"/>
-<rect x="640" y="236" width="100" height="44" rx="6"/>
-<rect x="770" y="236" width="80" height="44" rx="6"/>
-<rect x="880" y="60" width="96" height="44" rx="6"/>
-</g>
-<g fill="none" stroke="currentColor" stroke-width="1.3" marker-end="url(#ah2)">
-<line x1="78" y1="104" x2="78" y2="164"/>
-<line x1="225" y1="168" x2="225" y2="106"/>
-<path d="M275,82 L452,82 L452,66"/>
-<path d="M322,64 L322,72 L622,72 L622,164"/>
-<line x1="690" y1="176" x2="690" y2="234"/>
-<line x1="740" y1="258" x2="768" y2="258"/>
-<line x1="810" y1="236" x2="810" y2="176"/>
-<line x1="928" y1="168" x2="928" y2="106"/>
-</g>
-<g fill="currentColor" text-anchor="middle">
-<text x="78" y="80" font-weight="600">embed</text><text x="78" y="96" font-size="11" opacity=".75">patch + position</text>
-<text x="225" y="80" font-weight="600">LN → a_i</text><text x="225" y="96" font-size="11" opacity=".75">attention input</text>
-<text x="322" y="52">h0</text><text x="374" y="52">h1</text><text x="426" y="52">h2</text><text x="478" y="52">h3</text><text x="530" y="52">h4</text><text x="582" y="52">h5</text>
-<text x="452" y="20" font-size="11" opacity=".8">all 6 heads read a_i · hook_q, hook_k, hook_v, hook_pattern</text>
-<text x="690" y="256" font-weight="600">LN → m_i</text><text x="690" y="272" font-size="11" opacity=".75">MLP input</text>
-<text x="810" y="256" font-weight="600">MLP</text><text x="810" y="272" font-size="11" opacity=".75">GELU, ×4</text>
-<text x="928" y="80" font-weight="600">out</text><text x="928" y="96" font-size="11" opacity=".75">LN → head</text>
-<text x="660" y="120" font-size="11" opacity=".8" text-anchor="start">+= hook_result</text><text x="660" y="134" font-size="11" opacity=".8" text-anchor="start">(per head)</text>
-<text x="822" y="210" font-size="11" opacity=".8" text-anchor="start">+= hook_mlp_out</text>
-<text x="150" y="196" font-size="11" opacity=".8">hook_resid_pre</text>
-<text x="866" y="160" font-size="11" opacity=".8">… blocks 1–7 …</text>
-<text x="500" y="318" font-size="12" opacity=".85">writers: embed + 48 heads + 8 MLPs = 57 · readers: 8 attention inputs + 8 MLP inputs + out = 17 · edges = 513</text>
-</g>
-<text x="300" y="194" font-size="11" fill="#2a78d6" font-weight="600">residual stream: the sum of everything written so far</text>
-</svg>
-<figcaption class="muted">One block as the circuit methods see it. Every component <b>adds</b> its output to the residual stream, and every reader
-sees the <b>sum</b> so far, so the network is a graph of writers and readers. An <b>edge</b> is one writer feeding one reader (e.g.
-<code>a5.h2→m6</code>); the six heads of a block share one reader, their attention input, as in Vi-CD's reduced graph. Edge patching
-swaps one edge's contribution for its value in a counterfactual run; component patching swaps a whole writer.</figcaption></figure>"""
-
-TOOLS = [
-    ("Attention atlas", "where each head looks: the attention pattern from a query token", "blocks.i.attn.hook_pattern", "01"),
-    ("Logit lens", "decode the residual stream after each block with the final LN + head", "blocks.i.hook_resid_post", "02"),
-    ("Ablation", "zero or mean-replace one head's or MLP's output; what breaks, where", "attn.hook_result, hook_mlp_out", "03"),
-    ("Direct attribution", "split the output into each writer's contribution (frozen final-LN scale)", "hook_result, hook_mlp_out, hook_embed", "04"),
-    ("Latents + SAEs (exege)", "the residual stream at each block, on the 45×90 token grid, as an exege archive", "blocks.i.hook_resid_post", "05"),
-    ("Rossby probe (LAWFUL)", "plant a wave; patch whole writers from the perturbed run (sufficiency, necessity)", "component patching: hook_result, hook_mlp_out", "06, 07"),
-    ("Edge circuits (Vi-CD)", "patch single writer→reader edges from a counterfactual run; EAP; greedy pruning", "edge patching on the 513-edge graph", "07"),
-]
-
-
 def architecture_section() -> str:
-    rows = "".join(f"<tr><td><b>{t}</b></td><td>{w}</td><td><code>{h}</code></td><td>{n}</td></tr>"
-                   for t, w, h, n in TOOLS)
-    return f"""<h2 id="architecture">How we dissect the ViT</h2>
-<p>A deliberately plain Vision Transformer: no windowing, no relative positions, no spectral layers. All horizontal mixing is
-attention, and every component writes into one residual stream. That makes it a clean subject for the transformer
-interpretability toolbox.</p>
-{FIG_STEP}
-{FIG_BLOCK}
-<h3>The numbers</h3>
-<ul>
-<li><b>Input:</b> 34 prognostic fields (PS, TS; T, U, V and total water on 8 levels, level 0 at the top, 7 near the surface) + 5 forcings (insolation, surface height, land/ocean/ice fractions), normalized; 1° grid, 180×360.</li>
-<li><b>Tokens:</b> 4°×4° patches → 45×90 = 4050 tokens; each patch's 39×16 values are linearly embedded to 384 dimensions, plus a learned position embedding: the model's <b>only</b> source of latitude (and so of β).</li>
-<li><b>Blocks:</b> 8 pre-LayerNorm blocks; attention with 6 heads × 64 dims over all 4050 tokens (global; a head can look anywhere); MLP 384 → 1536 → 384 with GELU.</li>
-<li><b>Output:</b> final LayerNorm → linear to 34 (v2: 44, with ACE's diagnostics) × 4×4 values per token → un-patchify (v2: + a 3×3 convolution against patch seams); the result is the normalized 6-h tendency.</li>
-<li><b>Size:</b> 16.2 M parameters. The circuit graph: 57 writers (embed, 48 heads, 8 MLPs), 17 readers (8 attention inputs, 8 MLP inputs, the output), 513 edges.</li>
-<li><b>v3:</b> per-token noise modulates every LayerNorm's scale and shift (zero-initialized), making the model stochastic; the graph is unchanged.</li>
-</ul>
-<h3>Where each tool cuts</h3>
-<div class="tw"><table><thead><tr><th>tool</th><th>what it does</th><th>hook points</th><th>notebook</th></tr></thead><tbody>{rows}</tbody></table></div>
-<p class="muted">Hook names follow TransformerLens and are listed at the top of <code>vit_interp/model.py</code>; the exege adapter
-(<code>vit-interp</code>) exposes the same graph to <code>exege circuits</code> and <code>exege laws</code>.</p>"""
+    return """<h2 id="architecture">How we dissect the ViT</h2>
+<div class="card" style="display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:16px;align-items:center">
+<div><p style="margin-top:0">A deliberately plain Vision Transformer. The state is cut into <b>4°×4° patches</b> (4050 tokens); a
+<b>learned position embedding</b> is its only sense of place; <b>8 pre-LayerNorm blocks</b> of 6 global attention heads and an MLP
+write into one <b>residual stream</b>; a linear decoder turns it back into the 6-hour <b>tendency</b>. Carrying the state forward and the
+conservation corrections happen outside the network.</p>
+<p>The <a href="architecture.html"><b>architecture explorer</b></a> draws this with the model's own internals: the patches, what the position
+embedding learned, where each of the 48 heads looks from three points on the globe, what every block would predict (the logit lens),
+and what each design choice lets us dissect, with each hackathon tool attached where it cuts in.</p>
+<p><a href="architecture.html" class="tag released" style="font-size:.95rem;padding:4px 12px">Open the architecture explorer →</a></p></div>
+<div><a href="architecture.html"><img class="fig" src="arch/att_npac_L4H3.png" alt="attention of head L4H3 from the North Pacific"></a>
+<div class="muted">Head L4H3, attending from the North Pacific (orange dot): on average it reads 30° upstream.</div>
+<a href="architecture.html"><img class="fig" src="arch/pos_pc1.png" alt="first principal component of the learned position embedding"></a>
+<div class="muted">The learned position embedding's leading component: latitude, discovered from data.</div></div>
+</div>"""
 
 
 def build(out: Path) -> None:
