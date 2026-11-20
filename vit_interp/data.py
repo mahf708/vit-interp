@@ -21,7 +21,55 @@ import numpy as np
 
 # The sibling amip151_1951_2015.zarr is incomplete (unwritten chunks read as NaN); use the netCDF.
 NC_DIR = "/lcrc/group/e3sm/ac.ngmahfouz/fme/amip_151/traindata"
-DATA_ROOT = "/lcrc/globalscratch/ac.ngmahfouz/vit-interp/data"
+_LCRC_DATA = "/lcrc/globalscratch/ac.ngmahfouz/vit-interp/data"
+HF_DATA_REPO = "mahf708/vit-interp-e3sm-2010"  # the 2010 inputs, for use off LCRC
+HF_MODEL_REPO = "mahf708/vit-interp-e3sm"  # released checkpoints: v1/v1.pt, v2/v2.pt
+
+
+def _default_data_root() -> str:
+    """$VIT_INTERP_DATA, else the LCRC copy when it is there, else a local cache that
+    ``ensure_data`` fills from Hugging Face."""
+    if os.environ.get("VIT_INTERP_DATA"):
+        return os.environ["VIT_INTERP_DATA"]
+    if (Path(_LCRC_DATA) / "meta.json").exists():
+        return _LCRC_DATA
+    cache = Path(os.environ.get("VIT_INTERP_CACHE", Path.home() / ".cache" / "vit-interp"))
+    return str(cache / "data-2010")
+
+
+DATA_ROOT = _default_data_root()
+
+
+def ensure_data(root: str = DATA_ROOT, year: int = 2010) -> str:
+    """Make sure ``root`` holds the metadata, stats and ``year``; off LCRC, download the 2010
+    inputs (about 15 GB) from Hugging Face the first time."""
+    r = Path(root)
+    if (r / "meta.json").exists() and (r / f"{year}.npy").exists():
+        return str(r)
+    if year != 2010:
+        raise FileNotFoundError(f"{r} has no {year}.npy, and only 2010 is published")
+    from huggingface_hub import snapshot_download
+
+    print(f"downloading the 2010 inputs from huggingface.co/datasets/{HF_DATA_REPO} into {r} (~15 GB, once)")
+    snapshot_download(HF_DATA_REPO, repo_type="dataset", local_dir=str(r))
+    return str(r)
+
+
+def resolve_checkpoint(spec: str | Path) -> Path:
+    """A checkpoint file, or ``v1``/``v2`` (also ``hf:v2``): the released checkpoints, from the
+    LCRC release directory when it is there, else downloaded from Hugging Face."""
+    s = str(spec)
+    if Path(s).is_file():
+        return Path(s)
+    name = s.removeprefix("hf:")
+    if name in ("v1", "v2"):
+        lcrc = Path("/lcrc/globalscratch/ac.ngmahfouz/vit-interp/runs/vit-p4-d384-l8/release") / f"{name}.pt"
+        if lcrc.is_file():
+            return lcrc
+        from huggingface_hub import hf_hub_download
+
+        return Path(hf_hub_download(HF_MODEL_REPO, f"{name}/{name}.pt"))
+    raise FileNotFoundError(f"no checkpoint {s!r} (a path, or v1 / v2)")
 
 LEVELS = range(8)  # 0 = model top ... 7 = near surface
 PROG_NAMES = (

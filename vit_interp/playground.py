@@ -32,7 +32,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .data import ALL_NAMES, DATA_ROOT, N_PROG, PROG_NAMES, Stats
+from .data import ALL_NAMES, DATA_ROOT, N_PROG, PROG_NAMES, Stats, ensure_data, resolve_checkpoint
 from .emulator import Emulator
 from .model import _Ctx
 
@@ -64,7 +64,7 @@ def default_checkpoint() -> Path:
     for p in (RUN / "release" / "v2.pt", RUN / "release" / "v1.pt", RUN / "stage1" / "best.pt"):
         if p.exists():
             return p
-    raise FileNotFoundError(f"no checkpoint under {RUN}")
+    return resolve_checkpoint("v2")  # off LCRC: the released v2 from Hugging Face
 
 
 def load(ckpt: str | Path | None = None, device: str | None = None, data: str = DATA_ROOT):
@@ -74,7 +74,8 @@ def load(ckpt: str | Path | None = None, device: str | None = None, data: str = 
     if device == "cuda":
         torch.backends.cuda.matmul.allow_tf32 = True
     ckpt = ckpt or os.environ.get("PLAYGROUND_CKPT")
-    path = Path(ckpt) if ckpt else default_checkpoint()
+    path = resolve_checkpoint(ckpt) if ckpt else default_checkpoint()
+    data = ensure_data(data)
     em, ck = Emulator.load(path, Stats(data), meta(data)["lat"], map_location=device)
     em = em.to(device).eval()
     for p in em.parameters():

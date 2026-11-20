@@ -44,7 +44,7 @@ from exege.latents.source import LatentInfo, LayerInfo
 from exege.latents.steering import Hook, Rollout
 
 from . import circuits as C
-from .data import ALL_NAMES, DATA_ROOT, N_ALL, N_PROG, PROG_NAMES, Stats
+from .data import ALL_NAMES, DATA_ROOT, N_ALL, N_PROG, PROG_NAMES, Stats, ensure_data, resolve_checkpoint
 from .emulator import OCNFRAC, TS, Emulator
 from .model import token_latlon
 
@@ -76,9 +76,12 @@ class _Base:
         dtype: str = "float32",
         batch_limit: int | None = None,
     ) -> None:
-        path = Path(source)
-        if not path.is_file():
-            raise AdapterError(f"no checkpoint at {source}")
+        try:
+            path = resolve_checkpoint(source)  # a path, or v1 / v2 (downloaded off LCRC)
+        except FileNotFoundError:
+            raise AdapterError(f"no checkpoint at {source} (a path, or v1 / v2)") from None
+        if data == DATA_ROOT and year == 2010:
+            data = ensure_data(data, year)
         if dtype not in _DTYPES:
             raise RequestError(f"dtype must be one of {', '.join(_DTYPES)}, not {dtype!r}")
         root = Path(data)

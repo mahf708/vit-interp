@@ -15,7 +15,9 @@ dependencies = [
     "cftime",
     "pyyaml",
     "matplotlib",
-    "exege-core[circuits]",
+    "huggingface_hub>=0.23",
+    # exege's circuits and laws layers are on a branch until released
+    "exege-core[laws,latents,hf] @ git+https://github.com/mahf708/exege@mahf708/circuits",
 ]
 
 [project.optional-dependencies]
@@ -28,9 +30,8 @@ test = ["pytest>=7.4"]
 vit-interp = "vit_interp.exege_adapter:ViTEmulator"
 vit-interp-tokens = "vit_interp.exege_adapter:ViTTokens"
 
-# exege's circuits extra is on a branch until it is released.
-[tool.uv.sources]
-exege-core = { git = "https://github.com/mahf708/exege", branch = "mahf708/circuits" }
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["vit_interp"]
