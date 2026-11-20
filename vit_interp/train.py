@@ -58,7 +58,12 @@ def main():
     p.add_argument("--heads", type=int, default=6)
     p.add_argument("--mlp-ratio", type=float, default=4.0)
     p.add_argument("--batch", type=int, default=4, help="per GPU")
-    p.add_argument("--n-steps", type=int, default=1, help="autoregressive steps in the loss")
+    p.add_argument("--n-steps", type=int, default=1, help="autoregressive steps in the loss (the maximum with --min-steps)")
+    p.add_argument("--min-steps", type=int, default=0,
+                   help="draw each batch's rollout length uniformly in [min-steps, n-steps] (0: always n-steps)")
+    p.add_argument("--grad-last-only", action="store_true",
+                   help="run all but the last step without gradients; loss and backprop on the last step only "
+                        "(ACE's optimize_last_step_only): long rollouts at one step's memory")
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--wd", type=float, default=0.05)
     p.add_argument("--epochs", type=int, default=30)
@@ -213,27 +218,30 @@ def main():
             g = torch.cat([g, d[:, N_PROG:]], 1)
         return g.reshape(-1, n_ens, *g.shape[1:])
 
-    def loss_fn(traj):
-        if ens_loss is not None:
-            tr = members(traj)
-            state, loss, ref = tr[:, 0, :N_PROG], 0.0, None
-            for t in range(a.n_steps):
-                if a.input_noise > 0:
-                    state = state + a.input_noise * em.std[:, :N_PROG] * torch.randn_like(state)
-                x = torch.cat([state, tr[:, t, N_PROG:N_ALL]], 1)
-                state, d, ref = predict(x, ref, tr[:, t + 1, N_PROG:N_ALL])
+    def loss_fn(traj, n=None):
+        """Rollout loss over n steps (default a.n_steps). With --grad-last-only, steps before the
+        last run without gradients and only the last step's loss is taken (the pushforward trick)."""
+        n = a.n_steps if n is None else n
+        last_only = a.grad_last_only
+        ens = ens_loss is not None
+        tr = members(traj) if ens else traj
+        state, loss, ref = tr[:, 0, :N_PROG], 0.0, None
+        for t in range(n):
+            if a.input_noise > 0:  # perturb what the model reads; targets follow the perturbed state
+                state = state + a.input_noise * em.std[:, :N_PROG] * torch.randn_like(state)
+            x = torch.cat([state, tr[:, t, N_PROG:N_ALL]], 1)
+            if last_only and t < n - 1:
+                with torch.no_grad():
+                    state, d, ref = predict(x, ref, tr[:, t + 1, N_PROG:N_ALL])
+                continue
+            state, d, ref = predict(x, ref, tr[:, t + 1, N_PROG:N_ALL])
+            if ens:
                 gen = ens_gen(state, d, traj[:, t])
                 tgt = target_of(traj[:, t], traj[:, t + 1])[:, None]
                 loss = loss + ens_loss(gen, tgt)[0]
-            return loss / a.n_steps
-        state, loss, ref = traj[:, 0, :N_PROG], 0.0, None
-        for t in range(a.n_steps):
-            if a.input_noise > 0:  # perturb what the model reads; targets follow the perturbed state
-                state = state + a.input_noise * em.std[:, :N_PROG] * torch.randn_like(state)
-            x = torch.cat([state, traj[:, t, N_PROG:N_ALL]], 1)
-            state, d, ref = predict(x, ref, traj[:, t + 1, N_PROG:N_ALL])
-            loss = loss + ((d - target_of(x, traj[:, t + 1])) ** 2 * em.area_w).mean()
-        return loss / a.n_steps
+            else:
+                loss = loss + ((d - target_of(x, tr[:, t + 1])) ** 2 * em.area_w).mean()
+        return loss if last_only else loss / n
 
     def em_state(use_ema: bool):
         sd = {k: v for k, v in em.state_dict().items() if not k.startswith("corrector.")}
@@ -332,7 +340,11 @@ def main():
             sampler.set_epoch(epoch)
         for traj in dl:
             traj = traj.to(dev, non_blocking=True)
-            loss = loss_fn(traj)
+            n_this = a.n_steps
+            if a.min_steps:  # the same draw on every rank: seeded by the global step
+                import random as _random
+                n_this = _random.Random(10_007 * step + 1).randint(a.min_steps, a.n_steps)
+            loss = loss_fn(traj, n_this)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             gn = torch.nn.utils.clip_grad_norm_(em.net.parameters(), 1.0)
