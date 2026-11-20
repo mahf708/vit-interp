@@ -436,6 +436,9 @@ def architecture_section(out: Path) -> str:
     else:
         img, cap = "arch/att_npac_L0H0.png", "Head L0H0, attending from the North Pacific (orange dot)."
     return f"""<h2 id="architecture">How we dissect the ViT</h2>
+<figure style="margin:0 0 12px"><a href="architecture.html"><img class="fig" src="arch/schematic.svg" alt="architecture schematic: patches, embedding, 8 pre-LayerNorm transformer blocks, decoder; and the inside of one block"></a>
+<figcaption class="muted">The architecture: one 6-hour step with tensor shapes (top), and the inside of each of the 8 blocks with the hook points
+the tools use (bottom).</figcaption></figure>
 <div class="card" style="display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:16px;align-items:center">
 <div><p style="margin-top:0">A deliberately plain Vision Transformer. The state is cut into <b>4°×4° patches</b> (4050 tokens); a
 <b>learned position embedding</b> is its only sense of place; <b>8 pre-LayerNorm blocks</b> of 6 global attention heads and an MLP

@@ -38,6 +38,107 @@ QUERIES = [  # (key, label, lat, lon)
 SURF = "#fcfcfb"
 
 
+SCHEMATIC = """<svg viewBox="0 0 1120 560" role="img" aria-label="Architecture of the ViT emulator: 39 input fields are cut into 4-degree patches, linearly embedded with a learned position embedding into 4050 tokens of width 384, passed through 8 pre-LayerNorm transformer blocks (each: LayerNorm, 6-head attention, residual add; LayerNorm, MLP, residual add), decoded by a LayerNorm and linear head and un-patchified into a 6-hour tendency, which is added to the state and corrected." font-family="system-ui,-apple-system,sans-serif" font-size="12" style="width:100%;height:auto">
+<defs>
+<marker id="sa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+<marker id="sb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="16" markerHeight="16" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2a78d6"/></marker>
+</defs>
+<!-- ===== top: the pipeline ===== -->
+<g fill="none" stroke="currentColor" stroke-width="1.3">
+<rect x="28" y="78" width="70" height="46" rx="3"/><rect x="24" y="82" width="70" height="46" rx="3"/><rect x="20" y="86" width="70" height="46" rx="3" fill="#2a78d6" fill-opacity=".06"/>
+<rect x="140" y="80" width="78" height="48" rx="3"/>
+<path d="M155.6,80 V128 M171.2,80 V128 M186.8,80 V128 M202.4,80 V128 M140,96 H218 M140,112 H218" stroke-width=".8"/>
+<rect x="250" y="88" width="12" height="34" rx="2"/><rect x="266" y="88" width="12" height="34" rx="2"/><rect x="282" y="88" width="12" height="34" rx="2"/><rect x="318" y="88" width="12" height="34" rx="2"/>
+<rect x="362" y="80" width="66" height="48" rx="6"/>
+<circle cx="462" cy="104" r="11"/>
+<rect x="430" y="172" width="64" height="34" rx="6" stroke-dasharray="4 3"/>
+<rect x="500" y="62" width="160" height="84" rx="10" stroke="#2a78d6" stroke-width="2.4" fill="#2a78d6" fill-opacity=".07"/>
+<rect x="690" y="80" width="82" height="48" rx="6"/>
+<rect x="796" y="80" width="82" height="48" rx="6"/>
+<circle cx="906" cy="104" r="11"/>
+<rect x="934" y="80" width="68" height="48" rx="6" stroke-dasharray="5 4"/>
+<rect x="1028" y="80" width="78" height="48" rx="6"/>
+</g>
+<g fill="none" stroke="currentColor" stroke-width="1.2" marker-end="url(#sa)">
+<line x1="94" y1="104" x2="138" y2="104"/><line x1="218" y1="104" x2="246" y2="104"/><line x1="332" y1="104" x2="360" y2="104"/>
+<line x1="428" y1="104" x2="449" y2="104"/><line x1="462" y1="172" x2="462" y2="117"/>
+<line x1="473" y1="104" x2="498" y2="104"/><line x1="660" y1="104" x2="688" y2="104"/><line x1="772" y1="104" x2="794" y2="104"/>
+<line x1="878" y1="104" x2="893" y2="104"/><line x1="917" y1="104" x2="932" y2="104"/><line x1="1002" y1="104" x2="1026" y2="104"/>
+<path d="M55,78 V36 H906 V91"/>
+</g>
+<g fill="currentColor" text-anchor="middle">
+<text x="55" y="152" font-weight="600">x(t)</text><text x="55" y="167" font-size="11" opacity=".72">39 × 180 × 360</text>
+<text x="179" y="146" font-weight="600">4°×4° patches</text><text x="179" y="161" font-size="11" opacity=".72">45 × 90 grid</text>
+<text x="300" y="109" font-size="13">…</text>
+<text x="290" y="146" font-weight="600">tokens</text><text x="290" y="161" font-size="11" opacity=".72">4050 × 624</text>
+<text x="395" y="100" font-weight="600">linear</text><text x="395" y="115" font-size="11" opacity=".75">embed E</text>
+<text x="395" y="146" font-size="11" opacity=".72">624 → 384</text>
+<text x="462" y="108.5" font-weight="700">+</text>
+<text x="462" y="187" font-size="11">position</text><text x="462" y="200" font-size="11" opacity=".75">(learned)</text>
+<text x="580" y="92" font-weight="700" fill="#2a78d6">transformer block</text>
+<text x="580" y="110" font-weight="700" fill="#2a78d6">× 8</text>
+<text x="580" y="130" font-size="11" opacity=".8">residual stream 4050 × 384</text>
+<text x="731" y="100" font-weight="600">LN · linear</text><text x="731" y="115" font-size="11" opacity=".75">head</text>
+<text x="731" y="146" font-size="11" opacity=".72">384 → 34·16</text>
+<text x="837" y="100" font-weight="600" font-size="11.5">un-patchify</text><text x="837" y="115" font-size="11" opacity=".75">(+3×3 conv)</text>
+<text x="837" y="146" font-weight="600">Δx: tendency</text><text x="837" y="161" font-size="11" opacity=".72">34 × 180 × 360</text>
+<text x="906" y="108.5" font-weight="700">+</text>
+<text x="968" y="100" font-weight="600">correct</text><text x="968" y="115" font-size="11" opacity=".75">ACE-style</text>
+<text x="1067" y="108" font-weight="600">x(t + 6 h)</text>
+<text x="480" y="28" font-size="11" opacity=".8">skip: carry the state forward (outside the network)</text>
+</g>
+<!-- zoom lines -->
+<g stroke="currentColor" stroke-width=".9" stroke-dasharray="3 4" opacity=".55" fill="none">
+<line x1="500" y1="146" x2="30" y2="262"/><line x1="660" y1="146" x2="1090" y2="262"/>
+</g>
+<!-- ===== bottom: one block ===== -->
+<rect x="30" y="262" width="1060" height="286" rx="12" fill="none" stroke="currentColor" stroke-width="1" opacity=".35"/>
+<text x="48" y="286" font-weight="700" fill="currentColor">one transformer block (pre-LayerNorm), 8 in series</text>
+<line x1="60" y1="470" x2="1068" y2="470" stroke="#2a78d6" stroke-width="6" stroke-linecap="round" marker-end="url(#sb)"/>
+<g fill="none" stroke="currentColor" stroke-width="1.3">
+<rect x="178" y="360" width="58" height="40" rx="6"/>
+<rect x="276" y="318" width="250" height="118" rx="8"/>
+<rect x="290" y="346" width="30" height="62" rx="4"/><rect x="328" y="346" width="30" height="62" rx="4"/><rect x="366" y="346" width="30" height="62" rx="4"/>
+<rect x="404" y="346" width="30" height="62" rx="4"/><rect x="442" y="346" width="30" height="62" rx="4"/><rect x="480" y="346" width="30" height="62" rx="4"/>
+<circle cx="580" cy="470" r="12" fill="var(--bg,#fcfcfb)"/>
+<rect x="688" y="360" width="58" height="40" rx="6"/>
+<rect x="786" y="340" width="178" height="80" rx="8"/>
+<circle cx="1004" cy="470" r="12" fill="var(--bg,#fcfcfb)"/>
+</g>
+<g fill="none" stroke="currentColor" stroke-width="1.2" marker-end="url(#sa)">
+<path d="M140,466 V380 H176"/><line x1="236" y1="380" x2="274" y2="380"/>
+<path d="M526,377 H580 V456"/>
+<path d="M640,466 V380 H686"/><line x1="746" y1="380" x2="784" y2="380"/>
+<path d="M964,380 H1004 V456"/>
+</g>
+<g fill="currentColor" text-anchor="middle">
+<text x="207" y="385" font-weight="600">LN</text>
+<text x="401" y="336" font-weight="600">self-attention · 6 heads × 64</text>
+<text x="305" y="381">h0</text><text x="343" y="381">h1</text><text x="381" y="381">h2</text><text x="419" y="381">h3</text><text x="457" y="381">h4</text><text x="495" y="381">h5</text>
+<text x="401" y="426" font-size="10.5" opacity=".78">softmax(q·kᵀ/8)·v over 4050 tokens, then W_O</text>
+<text x="580" y="475" font-weight="700">+</text>
+<text x="717" y="385" font-weight="600">LN</text>
+<text x="875" y="370" font-weight="600">MLP</text><text x="875" y="389" font-size="11" opacity=".78">384 → 1536 → GELU → 384</text>
+<text x="875" y="406" font-size="11" opacity=".78">per token</text>
+<text x="1004" y="475" font-weight="700">+</text>
+</g>
+<g fill="currentColor" font-size="10.5" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" opacity=".8">
+<text x="64" y="494">hook_resid_pre</text>
+<text x="590" y="494">hook_resid_mid</text>
+<text x="930" y="494">hook_resid_post</text>
+<text x="282" y="452">hook_q, _k, _v · hook_pattern · hook_z</text>
+<text x="532" y="352">hook_result</text><text x="532" y="364">(per head)</text>
+<text x="968" y="368">hook_mlp_out</text>
+<text x="786" y="334">mlp.hook_pre · hook_post</text>
+</g>
+<g fill="currentColor" font-size="10.5" opacity=".8" text-anchor="middle">
+<text x="207" y="416">scale, shift</text><text x="207" y="429">← noise (v3)</text>
+<text x="717" y="416">scale, shift</text><text x="717" y="429">← noise (v3)</text>
+</g>
+<text x="560" y="532" font-size="11.5" text-anchor="middle" fill="currentColor" opacity=".85">every head and the MLP <tspan font-weight="700">add</tspan> to the stream; every LayerNorm reads the running sum. Writers: embed + 48 heads + 8 MLPs; readers: 8 + 8 + the head; 513 edges.</text>
+</svg>"""
+
+
 def coastlines():
     import cartopy.io.shapereader as shp
 
@@ -210,6 +311,8 @@ def main():
         "fields": {n: v[0] for n, v in fields.items()},
     }
     (adir / "arch.json").write_text(json.dumps(data))
+    (adir / "schematic.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg" ' + SCHEMATIC[5:]
+                                        .replace("currentColor", "#1b1b1a").replace("var(--bg,#fcfcfb)", "#fcfcfb"))
     (out / "architecture.html").write_text(page(data))
     for p in [out / "architecture.html", *adir.iterdir()]:
         p.chmod(0o644)
@@ -284,6 +387,10 @@ h2{border-bottom:1px solid var(--line);padding-bottom:.2em}table{border-collapse
 <p class="lede">The ViT emulator, drawn with its own internals for one 2010 state: what goes in, what the learned position embedding
 encodes, where each of the 48 attention heads looks, what the residual stream would predict after every block, and what comes out.
 Colored tags mark where each hackathon tool cuts in.</p>
+<figure style="margin:14px 0 6px"><div class="card" style="color:var(--fg)">__SCHEMATIC__</div>
+<figcaption class="cap" style="margin-top:6px">The architecture at a glance. Top: one 6-hour step, with tensor shapes. Bottom: inside each of the 8 blocks,
+with the hook points the tools use. v2 adds the 3×3 conv and 10 diagnostic outputs (44 channels); v3 adds the noise-conditioned LayerNorms.
+Below, the explorer shows each stage with this model's own internals.</figcaption></figure>
 <div class="legend" id="legend"></div>
 <div class="picker" id="picker"><span class="muted" style="align-self:center">Attention from:</span></div>
 
@@ -412,7 +519,7 @@ draw();
 </script></main></body></html>""".replace("__JS__", js).replace("__DIM__", str(c["dim"])).replace("__TOK__", str(c["tokens"])) \
         .replace("__DEPTH__", str(c["depth"])).replace("__OUT__", str(c["out"])) \
         .replace("__CONV__", " · 3×3 conv" if c["head_conv"] else "").replace("__CKPT__", data["ckpt"]) \
-        .replace("__UPSTREAM__", _upstream_text(data)).replace("__LENS__", _lens_text(data)) \
+        .replace("__SCHEMATIC__", SCHEMATIC).replace("__UPSTREAM__", _upstream_text(data)).replace("__LENS__", _lens_text(data)) \
         .replace("__TIME__", data["time"]).replace("__PARAMS__", f"{c['params'] / 1e6:.1f} M")
 
 
