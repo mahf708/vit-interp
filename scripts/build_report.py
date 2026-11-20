@@ -575,8 +575,11 @@ def rossby_versions(out: Path) -> str:
         if srch.exists():
             d = json.loads(srch.read_text())
             hits = [c for c in (d.get("search") or {}).get("circuits", []) if isinstance(c, dict)]
-            found = ", ".join(f"τ {c.get('tau')}: {len(c.get('components') or c.get('groups') or [])} blocks"
-                              for c in hits) or "none τ-consistent"
+            def blocks(c):
+                comp = c.get("components") or c.get("groups") or []
+                ids = sorted({int(x.split(".")[0][1:]) for x in comp if x[:1] in "am" and x.split(".")[0][1:].isdigit()})
+                return "blocks " + ", ".join(map(str, ids)) if ids else f"{len(comp)} components"
+            found = "; ".join(f"τ {c.get('tau')}: {blocks(c)}" for c in hits) or "none τ-consistent"
         cells.append(found)
         rows.append(cells)
         m45 = ex / "rossby_phi45.json"
