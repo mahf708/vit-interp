@@ -29,6 +29,7 @@ ROOT = Path("/lcrc/globalscratch/ac.ngmahfouz/vit-interp")
 RUNS = ROOT / "runs"
 NB_EXEC = ROOT / "notebooks-executed"
 OUT = Path("/lcrc/group/e3sm/public_html/diagnostic_output/ac.ngmahfouz/vit-interp")
+DEFAULT_MODEL = "v2"  # what vit_interp.playground.load() returns, and what the notebooks were executed on
 URL = "https://web.lcrc.anl.gov/public/e3sm/diagnostic_output/ac.ngmahfouz/vit-interp/"
 
 # reference categorical palette, fixed order; one hue per version, never reused
@@ -552,6 +553,58 @@ def analysis_sections(out: Path, release: dict) -> str:
     return "".join(parts)
 
 
+def rossby_versions(out: Path) -> str:
+    """Rossby-wave behaviour across every version with an exploration run (same probe, same states)."""
+    tmp = out / "_rossby_tmp"
+    tmp.mkdir(exist_ok=True)
+    rows, fig_series = [], []
+    for i, v in enumerate(VERSIONS):
+        ex = RUNS / v["run"] / "explore-final"
+        if v["name"] == "v1" and not (ex / "rossby_phi45.json").exists():
+            continue
+        r = fig_rossby(ex, tmp / f"{v['name']}.png")
+        if not r:
+            continue
+        by = {x["lat"]: x for x in r}
+        cells = [v["name"]]
+        for lat in ("30°N", "45°N", "60°N", "45°S"):
+            x = by.get(lat)
+            cells.append(f"{x['corr']:+.2f} / {x['ratio']:.1f}×" if x else "–")
+        srch = ex / "rossby_search_corr_phi45.json"
+        found = "–"
+        if srch.exists():
+            d = json.loads(srch.read_text())
+            hits = [c for c in (d.get("search") or {}).get("circuits", []) if isinstance(c, dict)]
+            found = ", ".join(f"τ {c.get('tau')}: {len(c.get('components') or c.get('groups') or [])} blocks"
+                              for c in hits) or "none τ-consistent"
+        cells.append(found)
+        rows.append(cells)
+        m45 = ex / "rossby_phi45.json"
+        if m45.exists():
+            m = json.loads(m45.read_text())["measure"]
+            fig_series.append((v["name"], [q["alpha"] for q in m["rows"]], [q["model"] for q in m["rows"]],
+                               [q["law"] for q in m["rows"]], PALETTE[i % len(PALETTE)]))
+    shutil.rmtree(tmp, ignore_errors=True)
+    if len(rows) < 2:
+        return ""
+    fig, ax = plt.subplots(figsize=(6.4, 3.6), facecolor=SURF)
+    for name, s_, f, g, c in fig_series:
+        ax.plot(s_, f, "-o", color=c, lw=1.8, ms=3.5, label=name)
+    if fig_series:
+        ax.plot(fig_series[0][1], fig_series[0][3], "k--", lw=1.5, label="barotropic theory")
+    _style(ax, "45°N: intrinsic frequency of a planted wave, every version")
+    ax.set_xlabel("zonal wavenumber s", color=INK2, fontsize=9)
+    ax.set_ylabel("ω − kŪ (rad/day)", color=INK2, fontsize=9)
+    ax.legend(frameon=False, fontsize=8, labelcolor=INK)
+    fig.tight_layout(); fig.savefig(out / "rossby_versions.png", dpi=150); plt.close(fig)
+    return ("<h3 id='rossby-versions'>Rossby waves across versions</h3>"
+            "<p>The same probe (8 states of 2010, wavenumbers 2–14, levels 2–4) on every version that has been explored. "
+            "Each cell: correlation of the model's dispersion with barotropic theory across wavenumbers / fitted magnitude "
+            "ratio (model ÷ theory; 1 is right). Stochastic models are probed with their noise held at one fixed draw.</p>"
+            + _img("rossby_versions.png", "Rossby dispersion at 45N across versions")
+            + _table(["version", "30°N", "45°N", "60°N", "45°S", "LAWFUL block circuit at 45°N (correlation score)"], rows))
+
+
 def architecture_section(out: Path) -> str:
     j = out / "arch" / "arch.json"
     up = json.loads(j.read_text()).get("upstream", []) if j.exists() else []
@@ -589,12 +642,16 @@ def build(out: Path) -> None:
                  for i, s in enumerate(summ) if s["eval"]]
     has_cmp = fig_acc(evaluated, out / "versions_acc.png")
     released = [s for s in summ if s["status"] == "released"]
-    current = released[-1] if released else summ[0]
+    # the default model (what pg.load() and the notebooks use), not the newest release
+    current = next((x for x in summ if x["v"]["name"] == DEFAULT_MODEL), released[-1] if released else summ[0])
+    # analyses (Rossby, circuits) from the newest version that has an exploration run
+    analysed = current["v"] if (RUNS / current["v"]["run"] / "explore-final").exists() else \
+        next((x["v"] for x in reversed(summ) if (RUNS / x["v"]["run"] / "explore-final").exists()), current["v"])
     m = current["eval"] or {}
     kpis = ""
     if m:
         sk = m["skill"]
-        kpis = (f'<div class="grid"><div class="card"><div class="muted">current release</div><div class="kpi">'
+        kpis = (f'<div class="grid"><div class="card"><div class="muted">default model (<code>pg.load()</code>)</div><div class="kpi">'
                 f'{current["v"]["name"]}</div><div class="muted">{html.escape(current["v"]["title"])}</div></div>'
                 f'<div class="card"><div class="muted">5-day anomaly correlation, U_3</div><div class="kpi">'
                 f'{sk["U_3"]["5d"]["acc"]:.2f}</div><div class="muted">persistence {sk["U_3"]["5d"]["acc_persistence"]:.2f}</div></div>'
@@ -623,7 +680,8 @@ level-7 water within 10%, surface pressure within 100 Pa, jet-level wind within 
 column is the older, laxer criterion (global near-surface temperature off by more than 30 K).</p>
 {_img("versions_acc.png", "anomaly correlation vs lead, all evaluated versions") if has_cmp else ""}
 {stability_section(out)}
-{analysis_sections(out, current["v"])}
+{analysis_sections(out, analysed)}
+{rossby_versions(out)}
 <h2 id="notebooks">Hackathon notebooks (executed on {current["v"]["name"]})</h2><ul>{nb_list}</ul>
 <p class="muted">Run them on Swing: <code>HACKATHON.md</code> in the vit-interp repository; the exege layers are on the
 <code>mahf708/circuits</code> branch of exege.</p>"""
