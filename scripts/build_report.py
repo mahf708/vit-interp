@@ -101,6 +101,22 @@ VERSIONS = [
         ],
         "changes": "stochastic (noise-conditioned norms); ensemble CRPS loss instead of MSE",
     },
+    {
+        "name": "v4",
+        "title": "+ long probabilistic rollouts (4–16 steps), gradient on the last step only",
+        "run": "vit4-p4-d384-l8",
+        "checkpoint": "vit-p4-d384-l8/release/v4.pt",
+        "headline_eval": "eval-long",
+        "stages": [("long rollouts, 4–16 steps", "long")],
+        "evals": [("long rollouts (4-member ensemble)", "eval-long")],
+        "recipe": [
+            "As v3 (stochastic, CRPS over 2 members, ACE-style correctors), starting from v3's one-step checkpoint, so it parallels v3's own short-rollout stages.",
+            "Rollouts: each batch a random length between 4 and 16 six-hour steps (1–4 days); every step but the last runs without gradients, and the loss is taken on the last step only (the pushforward trick; ACE's optimize_last_step_only). Memory stays at one step's worth.",
+            "Why: rollout training was the biggest win in v1 and v2 and had not converged; with MSE, long horizons blur, but CRPS keeps the ensemble sharp.",
+            "Code: branch <code>v4-longroll</code> of vit-interp.",
+        ],
+        "changes": "long random-length rollouts with last-step gradient (stochastic, CRPS)",
+    },
 ]
 
 
