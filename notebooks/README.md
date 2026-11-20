@@ -15,8 +15,9 @@ to be coded from scratch. Each notebook ends with a **Try this** list to branch 
 | `06_rossby_probe` | LAWFUL-style: plant a Rossby wave and test the model's phase speeds against c − U = −β/K²; which layers carry it | `vit_interp.rossby` |
 | `07_exege_circuits_and_laws` | the papers' methods through exege on the real model: Vi-CD edge circuits (EAP, pruning, faithfulness curve, stable cores) and LAWFUL (Rossby consistency, sufficiency/necessity, τ-circuit search) | `exege.circuits`, `exege.laws` |
 
-**Just want to look?** Executed copies, with all figures, are in
-`/lcrc/globalscratch/ac.ngmahfouz/vit-interp/notebooks-executed/`.
+**Just want to look?** Every notebook, executed on the released model with all its figures:
+https://web.lcrc.anl.gov/public/e3sm/diagnostic_output/ac.ngmahfouz/vit-interp/#notebooks
+(on LCRC also `/lcrc/globalscratch/ac.ngmahfouz/vit-interp/notebooks-executed/`).
 
 ## The model in one paragraph
 
@@ -24,9 +25,21 @@ Input: 34 prognostic fields (PS, TS, and T, U, V, total water on 8 levels; level
 top, 7 near the surface) and 5 forcings, on the 1° E3SMv3 AMIP grid. Patches are 4°×4°,
 so there are 45×90 = 4050 tokens, each with a learned position embedding (the only source
 of latitude). The body is 8 pre-LN blocks with 6 heads × 64 dims and an MLP ×4. Output: the
-6-h tendency. Trained on 2000–2009; the notebooks use 2010. Hook names follow
+6-h tendency (release v2 also outputs 10 diagnostics: precipitation and fluxes). v2 was trained on
+1980–2009; the notebooks use 2010, which no model saw. Hook names follow
 TransformerLens (`blocks.{i}.attn.hook_pattern`, `hook_result` per head,
 `blocks.{i}.hook_resid_post`, …; see `vit_interp/model.py`).
+
+## Running them anywhere
+
+```console
+$ git clone https://github.com/mahf708/vit-interp && cd vit-interp && pip install -e . jupyterlab
+$ jupyter lab notebooks/
+```
+
+The first notebook downloads the released model and the 2010 inputs from Hugging Face (about 15 GB, once,
+into `~/.cache/vit-interp`; set `VIT_INTERP_CACHE` to put it elsewhere). A GPU makes 01, 03 and 07 fast; with
+`PLAYGROUND_FAST=1` every notebook runs on a CPU in a few minutes with smaller settings.
 
 ## Getting a Jupyter on Swing
 
