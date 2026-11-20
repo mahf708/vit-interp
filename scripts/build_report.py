@@ -70,8 +70,10 @@ VERSIONS = [
         "run": "vit2-p4-d384-l8",
         "checkpoint": "vit-p4-d384-l8/release/v2.pt",
         "headline_eval": "eval-ft8",
-        "stages": [("one-step, 36 epochs", "stage1"), ("4-step rollouts", "ft4"), ("8-step rollouts", "ft8")],
-        "evals": [("rollout-tuned, all four correctors", "eval-ft8")],
+        "stages": [("one-step, 36 epochs", "stage1"), ("4-step rollouts", "ft4"), ("8-step rollouts", "ft8"),
+                   ("8-step rollouts, extended", "ft8b")],
+        "evals": [("rollout-tuned (1 epoch at 8 steps)", "eval-ft8"),
+                  ("+ 6 more epochs at 8 steps", "eval-ft8b")],
         "recipe": [
             "Data: <b>1980–2009 (30 years)</b>, plus ACE's 10 diagnostics (precipitation, latent/sensible heat, surface and TOA radiation, moisture advection) as extra outputs.",
             "Model: as v1 plus a 3×3 output convolution after un-patchify (identity-initialized; after the circuit graph's last receiver).",
@@ -325,7 +327,7 @@ def version_page(v: dict, out: Path) -> dict:
     if (RUNS / v["checkpoint"]).exists():
         body.append(f"<p class='muted'>Checkpoint: <code>{RUNS / v['checkpoint']}</code></p>")
     (d / "index.html").write_text(_page(f"vit-interp {v['name']}", "".join(body), up="../"))
-    head = _eval(v, v["headline_eval"])
+    head = next((m for _, m, _ in reversed(evals)), None) or _eval(v, v["headline_eval"])
     return {"v": v, "status": status, "eval": head, "onestep": _onestep_end(v)}
 
 

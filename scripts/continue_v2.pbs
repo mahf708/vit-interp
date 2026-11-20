@@ -1,0 +1,25 @@
+#!/bin/bash
+# Extend v2's 8-step rollout stage (it was cut to 1 epoch): EPOCHS more epochs from ft8, then evaluate.
+#   qsub -v RUN=vit2-p4-d384-l8 scripts/continue_v2.pbs
+#PBS -A E3SM
+#PBS -q gpu
+#PBS -N vit2-ft8b
+#PBS -l select=1:ngpus=4
+#PBS -l walltime=08:00:00
+#PBS -j oe
+#PBS -o logs/
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$HOME/vit-interp}"
+RUN=${RUN:?set RUN}
+D=/lcrc/globalscratch/ac.ngmahfouz/vit-interp/data-v2
+O=/lcrc/globalscratch/ac.ngmahfouz/vit-interp/runs/$RUN
+export OMP_NUM_THREADS=4
+echo "$(date) v2 ft8b: ${EPOCHS:-6} more 8-step epochs"
+.venv/bin/torchrun --standalone --nproc-per-node 4 -m vit_interp.train --out "$O/ft8b" \
+  --data $D --train-years 1980-2009 --val-years 2010-2010 --head-conv 3 --ema 0.999 \
+  --corrector dry_air,positive,moisture,energy --unaccounted-heating 0.6 \
+  --init "$O/ft8/best.pt" --n-steps 8 --batch 2 --lr 2e-5 --warmup 100 --epochs ${EPOCHS:-6} \
+  --rollout-steps 40 --walltime-min ${WALL:-420}
+echo "$(date) eval"
+.venv/bin/python -m vit_interp.evaluate "$O/ft8b/best.pt" "$O/eval-ft8b" --data $D || true
+echo "$(date) done"
