@@ -122,7 +122,7 @@ def _device():
 def step(em, x, hooks=None, cache=None, names=None):
     """(next prognostic state, 6-h tendency), both physical, (B, 34, 180, 360)."""
     nxt, d = em.step(x, hooks=hooks, cache=cache, names=names)
-    return nxt, d.float() * em.res_std
+    return nxt, d[:, :N_PROG].float() * em.res_std
 
 
 @torch.no_grad()
@@ -431,7 +431,7 @@ def lens(em, x):
     rs = [cache["hook_embed"] + cache["hook_pos_embed"]] + [
         cache[f"blocks.{i}.hook_resid_post"] for i in range(em.cfg.depth)]
     blank = _Ctx(None, None, None)
-    decoded = [em.net.unembed(r, blank).float() * em.res_std for r in rs]
+    decoded = [em.net.unembed(r, blank)[:, :N_PROG].float() * em.res_std for r in rs]
     w = torch.tensor(_area(), dtype=torch.float32, device=final.device)
     groups = {"PS/TS": ["PS", "TS"], "T": [f"T_{k}" for k in range(8)],
               "U": [f"U_{k}" for k in range(8)], "V": [f"V_{k}" for k in range(8)],
@@ -475,16 +475,21 @@ def direct_attribution(em, x, channel: str, mask: np.ndarray | None = None):
     ln = em.net.ln_final
     scale = (r.var(-1, keepdim=True, unbiased=False) + ln.eps).sqrt()
     c = ch(channel)
-    p = em.cfg.patch
-    W = em.net.head.weight.view(em.cfg.out_chans, p * p, -1)[c]  # (p*p, D)
-    bias_out = em.net.head.bias.view(em.cfg.out_chans, p * p)[c]
+    C = em.cfg.out_chans
+    W = em.net.head.weight  # (C * p * p, D)
+    k = getattr(em.cfg, "head_conv", 0)
+
+    def decode(t):  # (B, N, C*p*p) head output -> channel c, after the output conv if any
+        y = em.net.unpatchify(t, C)
+        if k:  # the conv mixes channels, so decode all of them before taking c (it is linear)
+            y = torch.nn.functional.pad(y, (k // 2, k // 2, 0, 0), mode="circular")
+            y = torch.nn.functional.pad(y, (0, 0, k // 2, k // 2), mode="replicate")
+            y = em.net.out_conv(y)
+        return y[:, c]
 
     def write(contrib):  # (B, N, D) component -> (180, 360) physical tendency, batch mean
         z = (contrib - contrib.mean(-1, keepdim=True)) / scale * ln.weight
-        t = z @ W.T  # (B, N, p*p)
-        gh, gw = em.cfg.grid
-        t = t.reshape(-1, gh, gw, p, p).permute(0, 1, 3, 2, 4).reshape(-1, gh * p, gw * p)
-        return (t.float() * em.res_std[0, c]).mean(0)
+        return (decode(z @ W.T).float() * em.res_std[0, c]).mean(0)
 
     maps = {"embed": write(cache["hook_embed"] + cache["hook_pos_embed"])}
     b_O = sum(em.net.blocks[i].attn.b_O for i in range(L))
@@ -493,9 +498,8 @@ def direct_attribution(em, x, channel: str, mask: np.ndarray | None = None):
         for h in range(em.cfg.heads):
             maps[f"L{i}H{h}"] = write(res[:, :, h])
         maps[f"L{i}MLP"] = write(cache[f"blocks.{i}.hook_mlp_out"])
-    const = (ln.bias @ W.T + bias_out).float() * em.res_std[0, c]  # (p*p,)
-    gh, gw = em.cfg.grid
-    const_map = const.reshape(p, p).repeat(gh, gw)
+    const = (ln.bias @ W.T + em.net.head.bias).expand(1, r.shape[1], -1)  # (1, N, C*p*p)
+    const_map = (decode(const).float() * em.res_std[0, c])[0]
     maps["biases"] = write(b_O.expand_as(r)) + const_map
     total = sum(maps.values())
     err = float((total - final[:, c].mean(0)).abs().max())
