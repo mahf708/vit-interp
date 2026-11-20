@@ -26,7 +26,7 @@ Just want to look? Executed copies with every figure:
 ## 2. One-liners (no Python)
 
 On a GPU node, with `export PATH=/home/ac.ngmahfouz/vit-interp/.venv/bin:$PATH` and
-`CKPT=/lcrc/globalscratch/ac.ngmahfouz/vit-interp/runs/vit-p4-d384-l8/release/v1.pt`:
+`CKPT=/lcrc/globalscratch/ac.ngmahfouz/vit-interp/runs/vit-p4-d384-l8/release/v2.pt`:
 
 ```console
 $ exege circuits graph --adapter vit-interp --source $CKPT
@@ -60,7 +60,7 @@ Hooks follow TransformerLens names (`blocks.{i}.attn.hook_pattern`, `hook_result
 
 | | |
 |---|---|
-| checkpoints | `/lcrc/globalscratch/ac.ngmahfouz/vit-interp/runs/vit-p4-d384-l8/release/v1.pt` (frozen; 4- then 8-step rollout-tuned; the notebooks' default). `stage1/best.pt` is the one-step model, for comparisons |
+| checkpoints | `/lcrc/globalscratch/ac.ngmahfouz/vit-interp/runs/vit-p4-d384-l8/release/v2.pt` (frozen; the notebooks' default: 30 years of data, ACE diagnostics and correctors, rollout-tuned) and `release/v1.pt` (the first model, for comparisons). Details per version: the results page |
 | data | `/lcrc/globalscratch/ac.ngmahfouz/vit-interp/data/` (2000–2009 train, 2010 for everything here) |
 | skill | `runs/vit-p4-d384-l8/eval-*/summary.md` (year-long free run, RMSE/ACC vs lead) |
 | exege docs | `exege/docs/circuits.md`, `exege/docs/laws.md` on branch `mahf708/circuits` |
@@ -79,8 +79,8 @@ Hooks follow TransformerLens names (`blocks.{i}.attn.hook_pattern`, `hook_result
   of the response runs through the direct (embedding → output) path. Steering level?
   Baroclinicity? Patch size? That is a good afternoon. Results page:
   https://web.lcrc.anl.gov/public/e3sm/diagnostic_output/ac.ngmahfouz/vit-interp/
-- Skill (release/v1, year 2010): 5-day anomaly correlation 0.87 (PS), 0.84 (T_7), 0.83
-  (U_3), 0.78 (V_3); free-running with dry-air/positivity correction it holds up for ~8
-  months before drifting cold. Rollout fine-tuning took the free run from 58 to 248 days.
-  Patch seams (a 4° checkerboard) grow in long runs: few-day questions give the cleanest
-  answers. Full numbers: `runs/vit-p4-d384-l8/eval-ft8-corrected/summary.md`.
+- Skill on 2010, release v2 (v1 in brackets): 5-day anomaly correlation 0.92 (0.87) for PS,
+  0.89 (0.84) T_7, 0.87 (0.83) U_3, 0.84 (0.78) V_3. Free runs hold up for ~8 months, then drift:
+  v2 drifts moist and cold even with the energy budget enforced (it trades temperature for
+  latent energy). Patch seams grow in long runs, so few-day questions give the cleanest answers.
+  Every number, per version: the results page.
