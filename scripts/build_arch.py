@@ -195,7 +195,12 @@ def main():
         m_ = cache[f"blocks.{i}.hook_mlp_out"][0].norm(dim=-1).mean().item()
         writes.append({"attn": a_, "mlp": m_})
 
+    focused = [h for h in heads if h["entropy"] < 7.5]  # not a global average
+    upstream = sorted(focused, key=lambda h: h["dx"])[:3]
+    first_below = next((k for k, e in enumerate(lens_err) if 0 < k and e < 1.0), None)
     data = {
+        "upstream": [{"name": f"L{h['layer']}H{h['head']}", "dx": h["dx"], "km": h["km"]} for h in upstream],
+        "lens_first_below": first_below,
         "ckpt": ckpt, "time": a.time, "cfg": {"depth": cfg.depth, "heads": cfg.heads, "dim": cfg.dim, "patch": cfg.patch,
                                               "out": cfg.out_chans, "head_conv": getattr(cfg, "head_conv", 0),
                                               "tokens": cfg.n_tokens,
@@ -210,6 +215,23 @@ def main():
         p.chmod(0o644)
     adir.chmod(0o755)
     print(f"wrote {out / 'architecture.html'} ({len(list(adir.iterdir()))} assets)")
+
+
+def _upstream_text(data: dict) -> str:
+    u = data["upstream"]
+    if not u or u[0]["dx"] > -5:
+        return "No head in this model looks strongly upstream on average."
+    rest = ", ".join(f"{h['name']} ({-h['dx']:.0f}°)" for h in u[1:] if h["dx"] < -5)
+    return (f"In this model {u[0]['name']} reads about {-u[0]['dx']:.0f}° upstream (west) of a midlatitude token on average"
+            + (f"; {rest} also look west." if rest else "."))
+
+
+def _lens_text(data: dict) -> str:
+    e, k = data["lens_err"], data["lens_first_below"]
+    if k is None:
+        return "here the error stays above 100% until the end."
+    return (f"the decoded error stays above 100% until block {k - 1}, drops to {100 * e[k]:.0f}% after it, "
+            f"{100 * e[-2]:.0f}% after the second-to-last block, and 0 at the end.")
 
 
 def page(data: dict) -> str:
@@ -304,7 +326,7 @@ patch the model only has a linear map in and out, so sub-patch structure (and pa
 embedding → output path, and patch seams appear in long runs.</p><p class="muted">Try: 01 attention atlas; 06 Rossby probe.</p></div>
 <div class="card"><h3>Global attention, nothing else</h3><p>No windows, no convolutions in the body, no spectral layers: the only way information
 moves between places is a head looking somewhere. Horizontal transport and teleconnections must be done by heads, so their attention
-maps are the transport story. L4H3 reads about 30° upstream (west) of every midlatitude token.</p><p class="muted">Try: 01 attention atlas; 03 ablation lab.</p></div>
+maps are the transport story. __UPSTREAM__</p><p class="muted">Try: 01 attention atlas; 03 ablation lab.</p></div>
 <div class="card"><h3>A learned position embedding</h3><p>The model is never told latitude or longitude; it learns a vector per token. That is its
 only source of where it is, and so of the Coriolis parameter, β, land and sea. Its leading components are latitude bands and an
 east–west dipole, learned from data. Swap two rows of it and you test what the model does with location.</p><p class="muted">Try: 05 latents; the position-swap exercise in 06.</p></div>
@@ -312,7 +334,7 @@ east–west dipole, learned from data. Swap two rows of it and you test what the
 the output decomposes exactly into per-component contributions (direct attribution), any intermediate state can be decoded (the logit
 lens), and the network is a graph of 57 writers, 17 readers and 513 edges: the object Vi-CD patches.</p><p class="muted">Try: 02 lens; 04 attribution; 07 circuits.</p></div>
 <div class="card"><h3>A linear decoder</h3><p>Final LayerNorm, one linear map per token, un-patchify. The same decoder can be applied after any block,
-which is what makes the lens meaningful: the error drops from over 100% before block 6 to 65% after it and 0 at the end. v2 adds a 3×3
+which is what makes the lens meaningful: __LENS__ v2 adds a 3×3
 convolution against seams after the last reader, so the graph is unchanged.</p><p class="muted">Try: 02 logit lens.</p></div>
 <div class="card"><h3>Predict the tendency; keep the rest outside</h3><p>The network outputs only the 6-hour change. Carrying the state forward (the
 skip) and the ACE-style conservation corrections happen after it. Circuit and LAWFUL measurements therefore read the network's own
@@ -390,6 +412,7 @@ draw();
 </script></main></body></html>""".replace("__JS__", js).replace("__DIM__", str(c["dim"])).replace("__TOK__", str(c["tokens"])) \
         .replace("__DEPTH__", str(c["depth"])).replace("__OUT__", str(c["out"])) \
         .replace("__CONV__", " · 3×3 conv" if c["head_conv"] else "").replace("__CKPT__", data["ckpt"]) \
+        .replace("__UPSTREAM__", _upstream_text(data)).replace("__LENS__", _lens_text(data)) \
         .replace("__TIME__", data["time"]).replace("__PARAMS__", f"{c['params'] / 1e6:.1f} M")
 
 

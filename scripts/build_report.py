@@ -425,8 +425,17 @@ def analysis_sections(out: Path, release: dict) -> str:
     return "".join(parts)
 
 
-def architecture_section() -> str:
-    return """<h2 id="architecture">How we dissect the ViT</h2>
+def architecture_section(out: Path) -> str:
+    j = out / "arch" / "arch.json"
+    up = json.loads(j.read_text()).get("upstream", []) if j.exists() else []
+    if up:
+        head = up[0]["name"]
+        img = f"arch/att_npac_{head}.png"
+        cap = (f"Head {head}, attending from the North Pacific (orange dot): on average it reads "
+               f"{-up[0]['dx']:.0f}° upstream of a midlatitude token.")
+    else:
+        img, cap = "arch/att_npac_L0H0.png", "Head L0H0, attending from the North Pacific (orange dot)."
+    return f"""<h2 id="architecture">How we dissect the ViT</h2>
 <div class="card" style="display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:16px;align-items:center">
 <div><p style="margin-top:0">A deliberately plain Vision Transformer. The state is cut into <b>4°×4° patches</b> (4050 tokens); a
 <b>learned position embedding</b> is its only sense of place; <b>8 pre-LayerNorm blocks</b> of 6 global attention heads and an MLP
@@ -436,8 +445,8 @@ conservation corrections happen outside the network.</p>
 embedding learned, where each of the 48 heads looks from three points on the globe, what every block would predict (the logit lens),
 and what each design choice lets us dissect, with each hackathon tool attached where it cuts in.</p>
 <p><a href="architecture.html" class="tag released" style="font-size:.95rem;padding:4px 12px">Open the architecture explorer →</a></p></div>
-<div><a href="architecture.html"><img class="fig" src="arch/att_npac_L4H3.png" alt="attention of head L4H3 from the North Pacific"></a>
-<div class="muted">Head L4H3, attending from the North Pacific (orange dot): on average it reads 30° upstream.</div>
+<div><a href="architecture.html"><img class="fig" src="{img}" alt="{cap}"></a>
+<div class="muted">{cap}</div>
 <a href="architecture.html"><img class="fig" src="arch/pos_pc1.png" alt="first principal component of the learned position embedding"></a>
 <div class="muted">The learned position embedding's leading component: latitude, discovered from data.</div></div>
 </div>"""
@@ -469,7 +478,7 @@ def build(out: Path) -> None:
 interpretability hackathon: attention heads, circuits (Vi-CD) and physical laws (LAWFUL), with <a href="https://github.com/mahf708/exege">exege</a>.
 4°×4° patches (4050 tokens), 8 pre-LN blocks × 6 heads, all horizontal mixing in attention; everything evaluated on <b>2010</b>, unseen in training.</p>
 {kpis}
-{architecture_section()}
+{architecture_section(out)}
 <h2 id="versions">Versions</h2>
 <p>Each version has its own page with its recipe, training curves and evaluation. Every version is scored the same way:
 a year-long free run on 2010 with true forcing and prescribed SST, and 1–10-day forecasts from 8 starts against persistence and climatology.</p>
