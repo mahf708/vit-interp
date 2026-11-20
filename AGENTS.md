@@ -63,6 +63,8 @@ cache = {}; em.step(x.to(next(em.parameters()).device), cache=cache, names={"blo
 - **Time labels** are noleap-calendar strings (`2010-07-15T06:00:00`); unique prefixes work.
 - **Head identities differ between checkpoints:** a finding about `L4H3` in v1 says nothing about `L4H3` in v2.
   Recompute (`pg.head_atlas`) for the model you load.
-- **Known model limits:** good to ~5 days (5-day ACC 0.85–0.92); free runs drift after ~4 months; 4° patch
-  seams appear in long runs. Prefer few-day questions.
+- **Known model limits:** good to ~5 days (5-day ACC 0.85–0.92). Without help, free runs go unstable after 2–5 months:
+  4° patch-period noise grows every step until a hot spot (Tibet for v4, the poles for v2) spreads. `pg.rollout` turns on
+  the seam filter (`vit_interp.filters.SeamFilter`, outside the network) for runs over 10 days, and applies the
+  checkpoint's conservation correctors; with it v4 holds a realistic climate ~300 days. Prefer few-day questions.
 - Tests: `python -m pytest -q tests` (CPU, a few minutes).

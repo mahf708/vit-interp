@@ -134,13 +134,16 @@ def step(em, x, hooks=None, cache=None, names=None):
 
 @torch.no_grad()
 def rollout(em, t: str | int = 0, steps: int = 20, year: int = 2010, correct: bool = True,
-            seed: int | None = None, smooth: bool = False):
+            seed: int | None = None, smooth: bool | None = None):
     """(emulated, true) prognostic trajectories, each (steps + 1, 34, 180, 360), from E3SM's
     state at ``t`` with true forcings and prescribed ocean TS, applying the conservation
     correctors (as the published evaluations do; ``correct=False`` for the raw network).
-    ``seed`` makes a stochastic model's (v3, v4) noise reproducible. ``smooth=True`` applies the
-    seam filter (``vit_interp.filters``) at every step: use it for runs longer than a few weeks,
-    where patch-scale noise otherwise grows until the run destabilizes."""
+    ``seed`` makes a stochastic model's (v3, v4) noise reproducible. ``smooth`` applies the seam
+    filter (``vit_interp.filters``) at every step; the default turns it on for runs longer than
+    10 days (40 steps), where patch-scale noise otherwise grows until the run destabilizes, and
+    off for shorter ones (it costs ~0.01-0.02 of 5-day anomaly correlation)."""
+    if smooth is None:
+        smooth = steps > 40
     dev = next(em.parameters()).device
     tr = truth(t, steps, year, device=dev)
     filt = None

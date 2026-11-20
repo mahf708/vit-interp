@@ -109,10 +109,11 @@ experiment is how stable a circuit or head is across noise draws. Every number f
 
 ## Known so far (release v2; a starting point, please overturn)
 
-- **Skill on 2010:** 5-day anomaly correlation 0.92 (PS), 0.90 (T_7), 0.88 (U_3), 0.85 (V_3); the global
-  climate stays close to E3SM's for ~4 months of free running, then drifts moist and cold (the energy budget is
-  enforced; it trades temperature for latent energy). Patch seams grow in long runs: few-day questions give the
-  cleanest answers.
+- **Skill on 2010:** 5-day anomaly correlation 0.92 (PS), 0.90 (T_7), 0.88 (U_3), 0.85 (V_3).
+- **Why long runs go unstable:** the network adds a little 4° patch-period noise every step; it grows ~30× a month
+  until a hot spot (Tibet for v4, the poles for v2) blows up and spreads. A seam filter outside the network
+  (`pg.rollout(..., smooth=True)`, the default past 10 days) fixes it: v4 holds a realistic climate ~300 days instead
+  of 144. *Which heads write the seam noise?* is a good circuits question. Few-day questions give the cleanest answers.
 - **Heads that look upstream:** L3H5 reads ~20° west of a midlatitude token on average; L1H0 and L6H4 also
   look west. Block-0 heads average the whole globe; later heads are sharply local. Head identities differ
   between checkpoints: recompute for the model you load.

@@ -74,7 +74,8 @@ VERSIONS = [
         "stages": [("one-step, 36 epochs", "stage1"), ("4-step rollouts", "ft4"), ("8-step rollouts", "ft8"),
                    ("8-step rollouts, extended", "ft8b")],
         "evals": [("rollout-tuned (1 epoch at 8 steps)", "eval-ft8"),
-                  ("+ 6 more epochs at 8 steps", "eval-ft8b")],
+                  ("+ 6 more epochs at 8 steps", "eval-ft8b"),
+                  ("release + seam filter (inference)", "eval-ft8-filter")],
         "recipe": [
             "Data: <b>1980–2009 (30 years)</b>, plus ACE's 10 diagnostics (precipitation, latent/sensible heat, surface and TOA radiation, moisture advection) as extra outputs.",
             "Model: as v1 plus a 3×3 output convolution after un-patchify (identity-initialized; after the circuit graph's last receiver).",
@@ -92,7 +93,9 @@ VERSIONS = [
         "stages": [("one-step, 12 epochs", "stage1"), ("4-step rollouts", "ft4"), ("8-step rollouts", "ft8"),
                    ("8-step rollouts, extended", "ft8b")],
         "evals": [("rollout-tuned (1 epoch at 8 steps)", "eval-ft8"),
-                  ("+ 6 more epochs at 8 steps (4-member ensemble)", "eval-ft8b")],
+                  ("+ 6 more epochs at 8 steps (4-member ensemble)", "eval-ft8b"),
+                  ("release + seam filter (inference)", "eval-ft8-filter"),
+                  ("extended + seam filter (inference)", "eval-ft8b-filter")],
         "recipe": [
             "As v2, plus noise-conditioned LayerNorms (per-token noise embedding modulates every norm's scale and shift; zero-initialized), as in ACE2S.",
             "Loss: fair CRPS over 2 members per sample, replacing MSE (ACE adds 0.1 × a spectral energy score; we leave it out: CRPS is the proper per-point score that calibrates the ensemble, and our spectral transform is not ACE's).",
@@ -109,7 +112,8 @@ VERSIONS = [
         "checkpoint": "vit-p4-d384-l8/release/v4.pt",
         "headline_eval": "eval-long",
         "stages": [("long rollouts, 4–16 steps", "long")],
-        "evals": [("long rollouts (4-member ensemble)", "eval-long")],
+        "evals": [("long rollouts (4-member ensemble)", "eval-long"),
+                  ("+ seam filter (inference)", "eval-long-filter")],
         "recipe": [
             "As v3 (stochastic, CRPS over 2 members, ACE-style correctors), starting from v3's one-step checkpoint, so it parallels v3's own short-rollout stages.",
             "Rollouts: each batch a random length between 4 and 16 six-hour steps (1–4 days); every step but the last runs without gradients, and the loss is taken on the last step only (the pushforward trick; ACE's optimize_last_step_only). Memory stays at one step's worth.",
@@ -373,8 +377,9 @@ def version_page(v: dict, out: Path) -> dict:
     if (RUNS / v["checkpoint"]).exists():
         body.append(f"<p class='muted'>Checkpoint: <code>{RUNS / v['checkpoint']}</code></p>")
     (d / "index.html").write_text(_page(f"vit-interp {v['name']}", "".join(body), up="../"))
-    head = next((m for _, m, _ in reversed(evals)), None) or _eval(v, v["headline_eval"])
-    head_name = next((e for _, _, e in reversed(evals)), v["headline_eval"])
+    # the headline is the released model as it comes (no inference-time filter)
+    head_name = v["headline_eval"] if _eval(v, v["headline_eval"]) else next((e for _, _, e in reversed(evals)), v["headline_eval"])
+    head = _eval(v, head_name)
     return {"v": v, "status": status, "eval": head, "onestep": _onestep_end(v),
             "faithful": faithful_days(v, head_name)}
 
@@ -425,6 +430,78 @@ NB_TITLES = {
     "06_rossby_probe": "plant a Rossby wave: does the model know β?",
     "07_exege_circuits_and_laws": "Vi-CD edge circuits and LAWFUL through exege",
 }
+
+
+DRIFT = ROOT / "drift"
+
+
+def fig_stability(path: Path) -> bool:
+    """Patch-scale power, global-mean T_3 error, and the hot spot, from scripts/drift_probe.py runs."""
+    need = ["probe-v4-all4", "probe-v4-f60s1-365", "probe-v4-f60s1-seed1", "probe-v4-f60s1-seed2", "probe-v2-all4"]
+    if not all((DRIFT / f"{n}.npz").exists() for n in need):
+        return False
+    z = {n: np.load(DRIFT / f"{n}.npz") for n in need}
+    fig, ax = plt.subplots(1, 3, figsize=(15, 3.9), gridspec_kw={"width_ratios": [1, 1, 1.25]})
+    runs = [("probe-v2-all4", "v2", PALETTE[1], "-"), ("probe-v4-all4", "v4", PALETTE[0], "-"),
+            ("probe-v4-f60s1-365", "v4 + seam filter (3 seeds)", PALETTE[2], "-"),
+            ("probe-v4-f60s1-seed1", None, PALETTE[2], "-"), ("probe-v4-f60s1-seed2", None, PALETTE[2], "-")]
+    for n, lab, c, ls in runs:
+        q = z[n]
+        sn = list(q["spec_names"]); j = sn.index("T_3")
+        r = q["spec_e"][:, j, 88:93].sum(-1) / q["spec_t"][:, j, 88:93].sum(-1)
+        d = np.arange(1, len(r) + 1)
+        ax[0].semilogy(d, r, color=c, ls=ls, lw=1.6, label=lab)
+        g = q["g_err"][:, list(q["names"]).index("T_3")]
+        ax[1].plot(np.arange(1, len(g) + 1), g, color=c, ls=ls, lw=1.6, label=lab)
+    _style(ax[0], "4° patch-period power in T_3, emulator ÷ E3SM")
+    ax[0].set_xlabel("day of free run"); ax[0].axhline(1, color="#888", lw=0.8); ax[0].legend(frameon=False, fontsize=8)
+    _style(ax[1], "global-mean T_3 error (K)")
+    ax[1].set_xlabel("day of free run"); ax[1].axhline(0, color="#888", lw=0.8); ax[1].set_ylim(-5, 30)
+    q = z["probe-v4-all4"]; mn = list(q["map_names"])
+    e = q["maps"][124, mn.index("T_3")].astype(np.float32)
+    im = ax[2].pcolormesh(q["lon"], q["lat"], e, cmap="RdBu_r", vmin=-30, vmax=30, shading="auto")
+    ax[2].contour(q["lon"], q["lat"], np.abs(e) > 20, levels=[0.5], colors="k", linewidths=0.6)
+    _style(ax[2], "v4, day 125: T_3 error (K); the runaway starts at 26°N, 85°E")
+    ax[2].set_xlabel("longitude"); ax[2].set_ylabel("latitude")
+    fig.colorbar(im, ax=ax[2], shrink=0.85)
+    fig.tight_layout(); fig.savefig(path, dpi=110); plt.close(fig)
+    return True
+
+
+def stability_section(out: Path) -> str:
+    rows = []
+    for v, run, raw, filt in [("v2", "vit2-p4-d384-l8", "eval-ft8", "eval-ft8-filter"),
+                              ("v3", "vit3-p4-d384-l8", "eval-ft8", "eval-ft8-filter"),
+                              ("v3, extended", "vit3-p4-d384-l8", "eval-ft8b", "eval-ft8b-filter"),
+                              ("v4", "vit4-p4-d384-l8", "eval-long", "eval-long-filter")]:
+        a, b = _eval({"run": run}, raw), _eval({"run": run}, filt)
+        if not (a and b):
+            continue
+        fa, fb = faithful_days({"run": run}, raw), faithful_days({"run": run}, filt)
+        acc = lambda m, lead: " / ".join(f"{m['skill'][x][lead]['acc']:.2f}" for x in ACC_VARS)
+        run_days = lambda m: f"{m['days_run']:.0f} d" + (" (blew up)" if m.get("blowup") else "")
+        rows.append([v, f"{fa:.0f} d → <b>{fb:.0f} d</b>", f"{run_days(a)} → {run_days(b)}",
+                     f"{acc(a, '5d')} → {acc(b, '5d')}", f"{acc(a, '10d')} → {acc(b, '10d')}"])
+    if not rows:
+        return ""
+    img = _img("stability.png", "patch-period power growth, global-mean drift and the hot spot") if fig_stability(out / "stability.png") else ""
+    return f"""<h2 id="stability">Why free runs go unstable, and the fix</h2>
+<p>Every version tracks E3SM's global means for months, then jumps within weeks: mid-troposphere temperature rises by 10–25 K,
+with water and surface pressure following. The cause is the <b>4° patch grid</b>. Every step, the network adds a little energy at
+the patch period (about 2× E3SM's after one step). Training never shows it what that does over months, and the excess grows
+exponentially (×34 in a month and ×145 in three for v4; ×85 and ×1,400 for v2) until it sets off a local runaway where the
+seams meet strong forcing: the southern edge of the Tibetan Plateau for v4, the poles for v2. From there it spreads globally.
+The conservation correctors cannot stop it (runs with and without the moisture and energy budgets fail on the same day).</p>
+{img}
+<p><b>The fix at inference:</b> a seam filter on each step's increment, outside the network (so hooks, circuits and LAWFUL are
+unaffected). It damps zonal wavenumbers above 60, more strongly toward the poles as GCMs do, and makes one 1-2-1 pass in
+latitude, which is the part that matters most (filtering in longitude alone made v4 worse). Every model then runs the full year
+without blowing up, and the climate holds two to three times longer for the stochastic models, for 0.01–0.02 of 5-day anomaly correlation:</p>
+<div class="tw">{_table(["model", "climate holds*", "free run (2010)", "5-day ACC PS / T_7 / U_3 / V_3", "10-day ACC"], rows)}</div>
+<p>Use it with <code>pg.rollout(em, t, steps, smooth=True)</code> (the default for runs longer than 10 days),
+<code>em.rollout(..., smooth=SeamFilter(lat, 360))</code> or <code>python -m vit_interp.evaluate ... --filter 60 --shapiro 1</code>.
+<b>The fix in training</b> (running): v4 continued with ACE's spectral energy score, which charges the loss for wrong power at
+every wavenumber, and rollouts up to 6 days, with and without the filter in the training loop (v5a, v5b).</p>"""
 
 
 def analysis_sections(out: Path, release: dict) -> str:
@@ -525,7 +602,7 @@ def build(out: Path) -> None:
                 f'<div class="muted">{"then drifts" if m.get("blowup") else "stable"}</div></div></div>')
     nbs = notebooks_html(out)
     nb_list = "".join(f'<li><a href="{h}">{s}</a>: {html.escape(NB_TITLES.get(s, ""))}</li>' for s, h in nbs)
-    body = f"""<nav class="muted"><a href="#architecture">Architecture</a><a href="training.html">Training</a><a href="#versions">Versions</a><a href="#rossby">Rossby waves</a><a href="#circuits">Circuits</a><a href="#notebooks">Notebooks</a></nav>
+    body = f"""<nav class="muted"><a href="#architecture">Architecture</a><a href="training.html">Training</a><a href="#versions">Versions</a><a href="#stability">Stability</a><a href="#rossby">Rossby waves</a><a href="#circuits">Circuits</a><a href="#notebooks">Notebooks</a></nav>
 <h1>Inside a ViT emulator of E3SM</h1>
 <p class="lede">A close-to-vanilla Vision Transformer that steps E3SMv3 (1°, AMIP) forward 6 hours, built to be taken apart for the
 interpretability hackathon: attention heads, circuits (Vi-CD) and physical laws (LAWFUL), with <a href="https://github.com/mahf708/exege">exege</a>. Checkpoints and latent archives are on Hugging Face:
@@ -545,6 +622,7 @@ a year-long free run on 2010 with true forcing and prescribed SST, and 1–10-da
 level-7 water within 10%, surface pressure within 100 Pa, jet-level wind within 3 m/s; one-day means, first breach of any). The <b>free run</b>
 column is the older, laxer criterion (global near-surface temperature off by more than 30 K).</p>
 {_img("versions_acc.png", "anomaly correlation vs lead, all evaluated versions") if has_cmp else ""}
+{stability_section(out)}
 {analysis_sections(out, current["v"])}
 <h2 id="notebooks">Hackathon notebooks (executed on {current["v"]["name"]})</h2><ul>{nb_list}</ul>
 <p class="muted">Run them on Swing: <code>HACKATHON.md</code> in the vit-interp repository; the exege layers are on the
