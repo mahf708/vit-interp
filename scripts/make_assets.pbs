@@ -20,7 +20,7 @@ for M in jan:0 jul:724; do
   out=$A/$NAME-2010-$tag
   echo "$(date) export $out"
   .venv/bin/python -m vit_interp.export "$CKPT" "$out" --year 2010 --start $start --n 120 --embed --overwrite
-  $X latents info "$out" | head -20
+  $X latents info "$out" > "$out/INFO.txt" || true
   mkdir -p "$out/bases"
   for L in 3 5 8; do                      # archive layers: 0 = embed, i + 1 = block i
     echo "$(date) SAE on archive layer $L"
