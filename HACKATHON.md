@@ -42,6 +42,23 @@ $ exege laws rossby ... --search --by-block --control 30,90,150,210   # which bl
 Each runs in seconds to a minute on one A100 (a prune is 513 patched steps, about 45 s).
 `--help` on any of them lists every option; `--out x.json` keeps the numbers.
 
+## 2b. Precomputed latents (no GPU needed)
+
+The released model's residual stream, every block, every 6 hours for 30 days of January and of July
+2010, as [exege](https://github.com/mahf708/exege) latent archives on the 45×90 token grid, with
+sparse autoencoders (1024 features, top-32; 87–93% of the variance explained) on blocks 2, 4 and 7:
+
+```console
+$ A=/lcrc/globalscratch/ac.ngmahfouz/vit-interp/archives
+$ exege latents info $A/v2-2010-jan                       # layers: 0 = embed, i + 1 = block i
+$ exege latents region $A/v2-2010-jan --lat 45 --lon 180 --layer 5 --centered --pcs 3
+$ exege latents region $A/v2-2010-jan --lat 45 --lon 180 --layer 5 \
+    --features 5 --basis $A/v2-2010-jan/bases/sae-topk32-layer5.npz
+$ exege app --latents $A                                   # the local web app, over both months
+```
+
+January against July is a ready-made experiment: which features are seasonal, which follow the jet?
+
 ## 3. Python, your own way
 
 ```python
