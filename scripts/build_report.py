@@ -132,6 +132,31 @@ def _eval(v: dict, name: str) -> dict | None:
     return json.loads(p.read_text()) if p.exists() else None
 
 
+def faithful_days(v: dict, name: str) -> float | None:
+    """Days the free run's global means stay close to E3SM's: T_7 within 2 K, level-7 water within 10%,
+    PS within 100 Pa, U_3 within 3 m/s (one-day running means; the first breach of any)."""
+    p = RUNS / v["run"] / name / "fields.npz"
+    if not p.exists():
+        return None
+    d = np.load(p)
+    names = [str(x) for x in d["names"]]
+    se, st = d["ser_e"], d["ser_t"]
+    n = int(np.isfinite(se).all(1).sum())
+    if n < 8:
+        return None
+    k = np.ones(4) / 4
+    tests = [("T_7", lambda e, t: np.abs(e - t) > 2.0),
+             ("specific_total_water_7", lambda e, t: np.abs(e - t) / np.abs(t) > 0.10),
+             ("PS", lambda e, t: np.abs(e - t) > 100.0), ("U_3", lambda e, t: np.abs(e - t) > 3.0)]
+    days = []
+    for nm, bad in tests:
+        c = names.index(nm)
+        e, t = np.convolve(se[:n, c], k, "valid"), np.convolve(st[:n, c], k, "valid")
+        b = np.flatnonzero(bad(e, t))
+        days.append((b[0] + 3) / 4 if len(b) else n / 4)
+    return float(min(days))
+
+
 def _status(v: dict) -> str:
     if (RUNS / v["checkpoint"]).exists():
         return "released"
@@ -284,8 +309,9 @@ def _fmt(x, f="{:.2f}"):
     return "–" if x is None else f.format(x)
 
 
-def _eval_row(label, m) -> list:
-    free = f"{m['days_run']:.0f} d" + (" (then drifts)" if m.get("blowup") else " (stable)")
+def _eval_row(label, m, faithful=None) -> list:
+    free = (f"{faithful:.0f} d climate holds* · " if faithful is not None else "") + \
+        f"{m['days_run']:.0f} d run" + (" (then drifts)" if m.get("blowup") else " (stable)")
     acc = " / ".join(f"{m['skill'][v]['5d']['acc']:.2f}" for v in ACC_VARS)
     rmse = " / ".join(f"{m['skill'][v]['5d']['rmse']:.3g}" for v in ACC_VARS)
     return [html.escape(label), free, acc, rmse]
@@ -314,7 +340,7 @@ def version_page(v: dict, out: Path) -> dict:
     evals = [(label, _eval(v, e), e) for label, e in v["evals"]]
     evals = [(l, m, e) for l, m, e in evals if m]
     if evals:
-        body.append("<h2>Skill on 2010</h2>" + _table(EVAL_HEADER, [_eval_row(l, m) for l, m, _ in evals]))
+        body.append("<h2>Skill on 2010</h2>" + _table(EVAL_HEADER, [_eval_row(l, m, faithful_days(v, e)) for l, m, e in evals]))
         styles = ["-", (0, (4, 3)), "-", "-", "-"]
         if fig_acc([(l, m, PALETTE[i], styles[i]) for i, (l, m, _) in enumerate(evals)], d / "skill_acc.png"):
             body.append(_img("skill_acc.png", "anomaly correlation vs lead"))
@@ -346,7 +372,9 @@ def version_page(v: dict, out: Path) -> dict:
         body.append(f"<p class='muted'>Checkpoint: <code>{RUNS / v['checkpoint']}</code></p>")
     (d / "index.html").write_text(_page(f"vit-interp {v['name']}", "".join(body), up="../"))
     head = next((m for _, m, _ in reversed(evals)), None) or _eval(v, v["headline_eval"])
-    return {"v": v, "status": status, "eval": head, "onestep": _onestep_end(v)}
+    head_name = next((e for _, _, e in reversed(evals)), v["headline_eval"])
+    return {"v": v, "status": status, "eval": head, "onestep": _onestep_end(v),
+            "faithful": faithful_days(v, head_name)}
 
 
 def versions_table(summ: list[dict]) -> str:
@@ -362,11 +390,12 @@ def versions_table(summ: list[dict]) -> str:
             f'<span class="tag {s["status"]}">{s["status"]}</span>',
             (f"{_fmt(o['val_loss'], '{:.3f}')} (ep {o['epoch']})" if o else "–"),
             f"{_fmt(r1)} / {_fmt(r5, '{:.1f}')}",
+            (f"{s['faithful']:.0f} d" if s.get("faithful") is not None else "–"),
             (f"{m['days_run']:.0f} d" + (" (drifts)" if m.get("blowup") else "")) if m else "–",
             " / ".join(f"{m['skill'][x]['5d']['acc']:.2f}" for x in ACC_VARS) if m else "–",
         ])
     return _table(["version", "what changed", "status", "one-step val loss",
-                   "one-step U_3 RMSE: 1-step / 5-day (m/s)", "free run (2010)",
+                   "one-step U_3 RMSE: 1-step / 5-day (m/s)", "climate holds*", "free run (2010)",
                    "5-day ACC: PS / T_7 / U_3 / V_3 (final model)"], rows)
 
 
@@ -506,6 +535,9 @@ interpretability hackathon: attention heads, circuits (Vi-CD) and physical laws 
 <p>Each version has its own page with its recipe, training curves and evaluation. Every version is scored the same way:
 a year-long free run on 2010 with true forcing and prescribed SST, and 1–10-day forecasts from 8 starts against persistence and climatology.</p>
 {versions_table(summ)}
+<p class="muted">* <b>Climate holds:</b> days the year-long free run's global means stay close to E3SM's (near-surface temperature within 2 K,
+level-7 water within 10%, surface pressure within 100 Pa, jet-level wind within 3 m/s; one-day means, first breach of any). The <b>free run</b>
+column is the older, laxer criterion (global near-surface temperature off by more than 30 K).</p>
 {_img("versions_acc.png", "anomaly correlation vs lead, all evaluated versions") if has_cmp else ""}
 {analysis_sections(out, current["v"])}
 <h2 id="notebooks">Hackathon notebooks (executed on {current["v"]["name"]})</h2><ul>{nb_list}</ul>
