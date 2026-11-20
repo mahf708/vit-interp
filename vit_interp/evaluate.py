@@ -179,13 +179,15 @@ def free_run(step, a, times, n_steps, w, dev, log=print):
 
 
 @torch.no_grad()
-def skill(step, a, times, starts, lead, w, clim, dev):
-    """RMSE/ACC vs lead (1..lead steps) for SKILL_VARS; model, persistence, climatology."""
+def skill(step, a, times, starts, lead, w, clim, dev, members: int = 1):
+    """RMSE/ACC vs lead (1..lead steps) for SKILL_VARS; model, persistence, climatology.
+    With members > 1 (a stochastic model), RMSE/ACC are of the ensemble mean, and the CRPS
+    (area-weighted, fair) and the ensemble spread (sqrt of the mean member variance) are added."""
     vi = [PROG_NAMES.index(v) for v in SKILL_VARS]
     mon = _months(times)
     wn = (w / w.sum())[:, None] / a.shape[3]
     out = {k: np.zeros((len(starts), lead, len(vi))) for k in
-           ("rmse", "rmse_pers", "rmse_clim", "acc", "acc_pers")}
+           ("rmse", "rmse_pers", "rmse_clim", "acc", "acc_pers", "crps", "spread")}
     n_ok = np.zeros(lead)
 
     def rmse(x, y):
@@ -200,13 +202,15 @@ def skill(step, a, times, starts, lead, w, clim, dev):
     for i, s in enumerate(starts):
         if hasattr(step, "reset"):
             step.reset()
-        state = _to(dev, a[s][None, :N_PROG])
+        state = _to(dev, a[s][None, :N_PROG]).expand(members, -1, -1, -1).contiguous()
         x0 = np.asarray(a[s, vi], dtype=np.float64)
         for l in range(lead):
             truth = _to(dev, a[s + l + 1][None])
-            state = _prescribe(step(state, _to(dev, a[s + l][None, N_PROG:N_ALL]),
-                                    truth[:, N_PROG:N_ALL]), truth)
-            pred = state[0, vi].double().cpu().numpy()
+            forcing = _to(dev, a[s + l][None, N_PROG:N_ALL]).expand(members, -1, -1, -1)
+            state = _prescribe(step(state, forcing, truth[:, N_PROG:N_ALL].expand(members, -1, -1, -1)),
+                               truth.expand(members, -1, -1, -1))
+            ens = state[:, vi].double().cpu().numpy()  # (members, vars, H, W)
+            pred = ens.mean(0)
             y = truth[0, vi].double().cpu().numpy()
             c = clim[mon[s + l + 1] - 1].astype(np.float64)
             if not np.isfinite(pred).all():
@@ -218,6 +222,11 @@ def skill(step, a, times, starts, lead, w, clim, dev):
             out["rmse_clim"][i, l] = rmse(c, y)
             out["acc"][i, l] = acc(pred, y, c)
             out["acc_pers"][i, l] = acc(x0, y, c)
+            if members > 1:
+                n = members
+                pair = sum(np.abs(ens[p] - ens[q]) for p in range(n) for q in range(p + 1, n)) / (n * (n - 1) / 2)
+                out["crps"][i, l] = ((np.abs(ens - y).mean(0) - 0.5 * pair) * wn).sum((-2, -1))
+                out["spread"][i, l] = np.sqrt((ens.var(0, ddof=1) * wn).sum((-2, -1)))
             n_ok[l] += 1
     return {k: np.nanmean(v, 0) for k, v in out.items()}
 
@@ -388,6 +397,8 @@ def main(argv=None):
     p.add_argument("--data", default=DATA_ROOT)
     p.add_argument("--n-starts", type=int, default=8)
     p.add_argument("--lead-days", type=float, default=10)
+    p.add_argument("--members", type=int, default=1, help="ensemble members for the skill (stochastic models)")
+    p.add_argument("--seed", type=int, default=None, help="seed the model's noise (stochastic models)")
     p.add_argument("--clim-years", default=None, help="e.g. 2000-2009; default meta stats_years")
     p.add_argument("--correct", default=None,
                    help="corrector flags (dry_air,positive,moisture,energy); default: what the "
@@ -418,6 +429,8 @@ def main(argv=None):
         em.corrector = Corrector(ccfg, lat, ak, bk,
                                  diag_names=meta.get("diag_names", [])).to(dev)
         log(f"corrector: {sorted(flags)}")
+    if a.seed is not None:
+        torch.manual_seed(a.seed)  # the stochastic model's noise draws
     step = Stepper(em, dev)
     w = _weights(lat)
     arr, times = _arr(a.data, a.year), _times(a.data, a.year)
@@ -445,7 +458,7 @@ def main(argv=None):
         t1 = time.time()
         clim = monthly_climatology(a.data, cy, SKILL_VARS)
         log(f"climatology from {cy[0]}-{cy[-1]} in {time.time() - t1:.0f} s")
-        sk = skill(step, arr, times, starts, lead, w, clim, dev)
+        sk = skill(step, arr, times, starts, lead, w, clim, dev, members=a.members)
         sk["starts"] = [times[s] for s in starts]
     lead_hours = (np.arange(lead) + 1) * 6.0
 
@@ -476,8 +489,13 @@ def main(argv=None):
         metrics["skill"] = {
             v: {lab: {"rmse": float(sk["rmse"][i, j]), "rmse_persistence": float(sk["rmse_pers"][i, j]),
                       "rmse_climatology": float(sk["rmse_clim"][i, j]), "acc": float(sk["acc"][i, j]),
-                      "acc_persistence": float(sk["acc_pers"][i, j])} for lab, i in pick.items()}
+                      "acc_persistence": float(sk["acc_pers"][i, j]),
+                      **({"crps": float(sk["crps"][i, j]), "spread": float(sk["spread"][i, j]),
+                          "spread_skill": float(sk["spread"][i, j] / sk["rmse"][i, j])}
+                         if a.members > 1 else {})} for lab, i in pick.items()}
             for j, v in enumerate(SKILL_VARS)}
+        if a.members > 1:
+            metrics["members"] = a.members
         metrics["skill_starts"] = sk["starts"]
         metrics["climatology"] = "monthly means of the training years (00Z and 12Z), anomalies vs target month"
     (out / "metrics.json").write_text(json.dumps(metrics, indent=1))
@@ -507,6 +525,12 @@ def main(argv=None):
             for lab, m in d.items():
                 L.append(f"| {v} | {lab} | {m['rmse']:.3g} | {m['rmse_persistence']:.3g} | "
                          f"{m['rmse_climatology']:.3g} | {m['acc']:.3f} | {m['acc_persistence']:.3f} |")
+        if a.members > 1:
+            L += ["", f"**Ensemble** ({a.members} members; RMSE/ACC above are of the ensemble mean):", "",
+                  "| variable | lead | CRPS | spread | spread/skill |", "|---|---|---|---|---|"]
+            for v, d in metrics["skill"].items():
+                for lab, m in d.items():
+                    L.append(f"| {v} | {lab} | {m['crps']:.3g} | {m['spread']:.3g} | {m['spread_skill']:.2f} |")
     L += ["", "Figures: " + ", ".join(sorted(p.name for p in out.glob("*.png")))]
     (out / "summary.md").write_text("\n".join(L) + "\n")
     log((out / "summary.md").read_text())

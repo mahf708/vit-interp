@@ -101,10 +101,11 @@ listed at the top of `vit_interp/model.py` and drawn on the architecture schemat
 |---|---|---|
 | **v2 (default)** | 1980–2009 data, 10 extra diagnostic outputs (precipitation, fluxes), ACE-style correctors in the loss, 3×3 output conv, EMA; one-step then 4- and 8-step rollouts | `pg.load()`, `--source v2`; [Hugging Face](https://huggingface.co/mahf708/vit-interp-e3sm) |
 | v1 | the first model: 2000–2009, MSE, rollout-tuned | `pg.load("v1")`, `--source v1` |
-| v3 | v2 made stochastic (noise-conditioned LayerNorms), trained with CRPS: the best 10-day skill and calibrated ensembles | LCRC: `runs/vit3-p4-d384-l8/`, branch `v3-stochastic` |
-| v4 | v3 trained on long random-length rollouts with last-step gradients: holds a realistic climate longest | LCRC: `runs/vit4-p4-d384-l8/`, branch `v4-longroll` |
+| v3 | v2 made stochastic (noise-conditioned LayerNorms), trained with CRPS: the best 10-day skill and calibrated ensembles | `pg.load("v3")`, `--source v3` |
+| v4 | v3 trained on long random-length rollouts with last-step gradients: holds a realistic climate longest | `pg.load("v4")`, `--source v4` |
 
-Every number for every version (skill vs lead, free-run drift, days the climate holds) is on the results page.
+v3 and v4 draw fresh noise on every `em.step` (see the README's *Stochastic models*): a natural
+experiment is how stable a circuit or head is across noise draws. Every number for every version (skill vs lead, free-run drift, days the climate holds) is on the results page.
 
 ## Known so far (release v2; a starting point, please overturn)
 

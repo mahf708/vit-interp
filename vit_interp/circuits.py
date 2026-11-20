@@ -81,31 +81,41 @@ def graph_of(model: ViT) -> Graph:
     return Graph(model.cfg.depth, model.cfg.heads)
 
 
-def _blank() -> _Ctx:
-    return _Ctx(None, None, None)
+def _blank(noise=None) -> _Ctx:
+    return _Ctx(None, None, None, noise)
 
 
-def _attn_heads(model: ViT, i: int, x_in) -> torch.Tensor:
+def _noise_for(model: ViT, x_norm, noise):
+    """Stochastic models need one noise field shared by every pass of a patched run."""
+    if model.cfg.noise_dim and noise is None:
+        raise ValueError("a stochastic model (noise_dim > 0) needs the noise to patch with: "
+                         "pass the same noise to sender_outputs and edge_forward")
+    return noise
+
+
+def _attn_heads(model: ViT, i: int, x_in, noise=None) -> torch.Tensor:
     blk = model.blocks[i]
     cache: dict = {}
     ctx = _Ctx(None, cache, {f"blocks.{i}.attn.hook_result"})
-    blk.attn(blk.ln1.forward_ctx(x_in, _blank(), ""), ctx, f"blocks.{i}.attn")
+    blk.attn(blk.ln1.forward_ctx(x_in, _blank(noise), ""), ctx, f"blocks.{i}.attn")
     return cache[f"blocks.{i}.attn.hook_result"]  # (B, N, H, D), no bias
 
 
-def _mlp(model: ViT, i: int, x_in) -> torch.Tensor:
+def _mlp(model: ViT, i: int, x_in, noise=None) -> torch.Tensor:
     blk = model.blocks[i]
-    return blk.mlp(blk.ln2.forward_ctx(x_in, _blank(), ""), _blank(), "")
+    return blk.mlp(blk.ln2.forward_ctx(x_in, _blank(noise), ""), _blank(), "")
 
 
 @torch.no_grad()
-def sender_outputs(model: ViT, x_norm) -> torch.Tensor:
-    """(n_senders, B, N, D) sender outputs of an ordinary forward pass (e.g. the corrupted one)."""
+def sender_outputs(model: ViT, x_norm, noise=None) -> torch.Tensor:
+    """(n_senders, B, N, D) sender outputs of an ordinary forward pass (e.g. the corrupted one).
+    Stochastic models: ``noise`` (B, N, d), the same as the patched run's."""
+    noise = _noise_for(model, x_norm, noise)
     g = graph_of(model)
     names = {"hook_embed", "hook_pos_embed"}
     for i in range(g.depth):
         names |= {f"blocks.{i}.attn.hook_result", f"blocks.{i}.hook_mlp_out"}
-    _, c = model.run_with_cache(x_norm, names=names)
+    _, c = model.run_with_cache(x_norm, names=names, noise=noise)
     out = [c["hook_embed"] + c["hook_pos_embed"]]
     for i in range(g.depth):
         res = c[f"blocks.{i}.attn.hook_result"]
@@ -113,13 +123,15 @@ def sender_outputs(model: ViT, x_norm) -> torch.Tensor:
     return torch.stack(out)
 
 
-def edge_forward(model: ViT, x_norm, corrupt: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+def edge_forward(model: ViT, x_norm, corrupt: torch.Tensor, mask: torch.Tensor,
+                 noise=None) -> torch.Tensor:
     """Output (normalized tendency) of the clean input x_norm with edges patched.
 
     corrupt: sender_outputs(model, x_corrupt_norm). mask: (n_senders, n_receivers), 1 = edge
     carries the clean value, 0 = the corrupted one; entries for edges that do not exist are
     ignored.
     """
+    noise = _noise_for(model, x_norm, noise)
     g = graph_of(model)
     mask = mask.to(corrupt.dtype)
     S: list[torch.Tensor] = [model.embed(x_norm, _blank())]
@@ -134,11 +146,11 @@ def edge_forward(model: ViT, x_norm, corrupt: torch.Tensor, mask: torch.Tensor) 
         return (corr + m * (clean - corr)).sum(0) + bias
 
     for i, blk in enumerate(model.blocks):
-        res = _attn_heads(model, i, receive(f"a{i}"))
+        res = _attn_heads(model, i, receive(f"a{i}"), noise)
         S += [res[:, :, h] for h in range(g.heads)]
         bias = bias + blk.attn.b_O
-        S.append(_mlp(model, i, receive(f"m{i}")))
-    return model.unembed(receive("out"), _blank())
+        S.append(_mlp(model, i, receive(f"m{i}"), noise))
+    return model.unembed(receive("out"), _blank(noise))
 
 
 def full_mask(model: ViT, value: float = 1.0, device=None) -> torch.Tensor:
@@ -146,16 +158,18 @@ def full_mask(model: ViT, value: float = 1.0, device=None) -> torch.Tensor:
     return g.valid().to(device).float() * value
 
 
-def eap_scores(model, x_norm, corrupt, metric: Callable[[torch.Tensor], torch.Tensor]) -> torch.Tensor:
+def eap_scores(model, x_norm, corrupt, metric: Callable[[torch.Tensor], torch.Tensor],
+               noise=None) -> torch.Tensor:
     """Edge attribution patching: d metric / d mask at the clean run (first-order effect of
     corrupting each edge is minus this). Returns (n_senders, n_receivers), zero off-graph."""
     m = full_mask(model, device=x_norm.device).requires_grad_(True)
-    metric(edge_forward(model, x_norm, corrupt, m)).backward()
+    metric(edge_forward(model, x_norm, corrupt, m, noise)).backward()
     return m.grad * graph_of(model).valid().to(m.device)
 
 
 @torch.no_grad()
-def prune(model, x_norm, corrupt, metric, tau: float, order: str = "acdc", verbose: bool = False):
+def prune(model, x_norm, corrupt, metric, tau: float, order: str = "acdc", verbose: bool = False,
+          noise=None):
     """Greedy edge pruning with activation patching (ACDC; the Vi-CD criterion with a
     regression metric). Walks receivers from the output backwards and drops an edge when
     corrupting it moves the metric by less than tau (relative to the current circuit).
@@ -164,12 +178,12 @@ def prune(model, x_norm, corrupt, metric, tau: float, order: str = "acdc", verbo
     """
     g = graph_of(model)
     mask = full_mask(model, device=x_norm.device)
-    current = float(metric(edge_forward(model, x_norm, corrupt, mask)))
+    current = float(metric(edge_forward(model, x_norm, corrupt, mask, noise)))
     log = []
     for j in reversed(range(len(g.receivers))):
         for s in reversed(g.upstream(g.receivers[j])):
             mask[s, j] = 0.0
-            new = float(metric(edge_forward(model, x_norm, corrupt, mask)))
+            new = float(metric(edge_forward(model, x_norm, corrupt, mask, noise)))
             if abs(new - current) < tau:
                 current = new
                 log.append(((s, j), new))

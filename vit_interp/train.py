@@ -11,6 +11,12 @@ perturbs the prognostic inputs (targets are relative to the perturbed state, so 
 learns to correct small errors); --ema keeps an exponential moving average of the weights,
 which is what validation uses and what checkpoints carry as ``state_dict`` (the raw weights
 are kept as ``raw_net`` for resuming); --head-conv adds a smoothing convolution to the head.
+
+v3 options (off by default): --noise-dim makes the model stochastic (noise-conditioned
+LayerNorms, as ACE2S); --loss ensemble with --n-ensemble n >= 2 trains on ACE's EnsembleLoss
+(fair CRPS + spectral energy score; --crps-weight, --energy-weight, --crps-alpha) instead of
+MSE: each sample is run as n members with independent noise, each rolled out on its own.
+Validation then reports the ensemble mean's RMSE, the CRPS, and the spread/skill ratio.
 """
 
 from __future__ import annotations
@@ -40,13 +46,20 @@ def years(s: str) -> list[int]:
     return list(range(lo, hi + 1))
 
 
-def load_weights(em, sd) -> None:
+def load_weights(em, sd, allow_noise: bool = False, log=None) -> None:
     """Load a checkpoint's state_dict. The corrector's buffers are never saved (they are built
-    from the dataset's metadata), so they are the one thing allowed to be missing."""
+    from the dataset's metadata), so they are the one thing allowed to be missing. With
+    ``allow_noise`` (``--init``), a deterministic checkpoint may also lack the noise-conditioning
+    weights: they are zero-initialized, so the stochastic model starts as exactly that model."""
     missing, unexpected = em.load_state_dict(sd, strict=False)
     missing = [k for k in missing if not k.startswith("corrector.")]
+    noise = [k for k in missing if ".W_scale." in k or ".W_bias." in k or "noise" in k]
+    if allow_noise:
+        missing = [k for k in missing if k not in noise]
     if missing or unexpected:
         raise RuntimeError(f"checkpoint mismatch: missing {missing}, unexpected {unexpected}")
+    if allow_noise and noise and log:
+        log(f"--init: {len(noise)} noise-conditioning tensors start at zero (from a deterministic model)")
 
 
 def main():
@@ -61,7 +74,12 @@ def main():
     p.add_argument("--heads", type=int, default=6)
     p.add_argument("--mlp-ratio", type=float, default=4.0)
     p.add_argument("--batch", type=int, default=4, help="per GPU")
-    p.add_argument("--n-steps", type=int, default=1, help="autoregressive steps in the loss")
+    p.add_argument("--n-steps", type=int, default=1, help="autoregressive steps in the loss (the maximum with --min-steps)")
+    p.add_argument("--min-steps", type=int, default=0,
+                   help="draw each batch's rollout length uniformly in [min-steps, n-steps] (0: always n-steps)")
+    p.add_argument("--grad-last-only", action="store_true",
+                   help="run all but the last step without gradients; loss and backprop on the last step only "
+                        "(ACE's optimize_last_step_only): long rollouts at one step's memory")
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--wd", type=float, default=0.05)
     p.add_argument("--epochs", type=int, default=30)
@@ -80,6 +98,14 @@ def main():
     p.add_argument("--corrector", default="",
                    help="comma list of dry_air,positive,moisture,energy (ACE-style, in the loop)")
     p.add_argument("--unaccounted-heating", type=float, default=0.0, help="W/m2, for energy")
+    p.add_argument("--noise-dim", type=int, default=0, help="noise channels per token (0: deterministic)")
+    p.add_argument("--noise-type", default="gaussian", choices=["gaussian", "isotropic"])
+    p.add_argument("--loss", default="mse", choices=["mse", "ensemble"])
+    p.add_argument("--n-ensemble", type=int, default=1, help="members per sample (ensemble loss)")
+    p.add_argument("--crps-weight", type=float, default=1.0)
+    p.add_argument("--energy-weight", type=float, default=0.0,
+                   help="ACE adds 0.1 x a spectral energy score; off by default (CRPS alone)")
+    p.add_argument("--crps-alpha", type=float, default=1.0, help="1: fair CRPS; <1: almost fair")
     a = p.parse_args()
     t_start = time.time()
 
@@ -107,7 +133,7 @@ def main():
     diag_names = meta.get("diag_names", [])
     cfg = ViTConfig(in_chans=N_ALL, out_chans=N_PROG + len(diag_names), img_size=(180, 360),
                     patch=a.patch, dim=a.dim, depth=a.depth, heads=a.heads, mlp_ratio=a.mlp_ratio,
-                    head_conv=a.head_conv)
+                    head_conv=a.head_conv, noise_dim=a.noise_dim, noise_type=a.noise_type)
     em = Emulator(cfg, stats, meta["lat"]).to(dev)
     flags = {f for f in a.corrector.split(",") if f}
     if flags:
@@ -119,6 +145,16 @@ def main():
         log(f"corrector in the loop: {sorted(flags)}")
     if diag_names:
         log(f"diagnostics predicted: {', '.join(diag_names)}")
+    ens_loss = None
+    if a.loss == "ensemble":
+        if a.n_ensemble < 2 or not a.noise_dim:
+            raise SystemExit("--loss ensemble needs --n-ensemble >= 2 and --noise-dim > 0")
+        from .ensemble import EnsembleLoss
+
+        ens_loss = EnsembleLoss(meta["lat"], len(meta["lon"]), a.crps_weight, a.energy_weight,
+                                a.crps_alpha).to(dev)
+        log(f"ensemble loss: {a.n_ensemble} members, crps {a.crps_weight}, energy {a.energy_weight}")
+    n_ens = a.n_ensemble if ens_loss is not None else 1
     log(f"params: {sum(p.numel() for p in em.net.parameters()) / 1e6:.2f} M, tokens {cfg.n_tokens}")
 
     train = Trajectories(years(a.train_years), a.n_steps, a.data)
@@ -151,12 +187,13 @@ def main():
         epoch, step, best = ck["epoch"], ck["step"], ck["best"]
         log(f"resumed at epoch {epoch} step {step}")
     elif a.init:
-        load_weights(em, torch.load(a.init, map_location=dev, weights_only=False)["state_dict"])
+        load_weights(em, torch.load(a.init, map_location=dev, weights_only=False)["state_dict"],
+                     allow_noise=True, log=log)
         if ema is not None:
             ema = {k: v.detach().clone().float() for k, v in em.net.state_dict().items()}
         log(f"initialized from {a.init}")
 
-    net = DDP(em.net, device_ids=[local]) if ddp else em.net
+    net = DDP(em.net, device_ids=[local], broadcast_buffers=False) if ddp else em.net  # rank-0-only rollouts
     fwd = torch.compile(net) if a.compile else net
 
     def predict(x, ref=None, forcing_next=None):
@@ -174,15 +211,41 @@ def main():
         t = (nxt_true[:, :N_PROG] - x[:, :N_PROG]) / em.res_std
         return torch.cat([t, em.diag_target(nxt_true)], 1) if em.n_diag else t
 
-    def loss_fn(traj):
-        state, loss, ref = traj[:, 0, :N_PROG], 0.0, None
-        for t in range(a.n_steps):
+    def members(traj):  # (B, ...) -> (B * n, ...), each sample's members contiguous
+        return traj.repeat_interleave(n_ens, 0) if n_ens > 1 else traj
+
+    def ens_gen(nxt, d, truth_now):
+        """members' outputs, scored against a common reference (the true state at t):
+        (B, n, C, H, W) normalized tendency w.r.t. truth (+ diagnostics)."""
+        g = (nxt - members(truth_now[:, :N_PROG])) / em.res_std
+        if em.n_diag:
+            g = torch.cat([g, d[:, N_PROG:]], 1)
+        return g.reshape(-1, n_ens, *g.shape[1:])
+
+    def loss_fn(traj, n=None):
+        """Rollout loss over n steps (default a.n_steps). With --grad-last-only, steps before the
+        last run without gradients and only the last step's loss is taken (the pushforward trick)."""
+        n = a.n_steps if n is None else n
+        last_only = a.grad_last_only
+        ens = ens_loss is not None
+        tr = members(traj) if ens else traj
+        state, loss, ref = tr[:, 0, :N_PROG], 0.0, None
+        for t in range(n):
             if a.input_noise > 0:  # perturb what the model reads; targets follow the perturbed state
                 state = state + a.input_noise * em.std[:, :N_PROG] * torch.randn_like(state)
-            x = torch.cat([state, traj[:, t, N_PROG:N_ALL]], 1)
-            state, d, ref = predict(x, ref, traj[:, t + 1, N_PROG:N_ALL])
-            loss = loss + ((d - target_of(x, traj[:, t + 1])) ** 2 * em.area_w).mean()
-        return loss / a.n_steps
+            x = torch.cat([state, tr[:, t, N_PROG:N_ALL]], 1)
+            if last_only and t < n - 1:
+                with torch.no_grad():
+                    state, d, ref = predict(x, ref, tr[:, t + 1, N_PROG:N_ALL])
+                continue
+            state, d, ref = predict(x, ref, tr[:, t + 1, N_PROG:N_ALL])
+            if ens:
+                gen = ens_gen(state, d, traj[:, t])
+                tgt = target_of(traj[:, t], traj[:, t + 1])[:, None]
+                loss = loss + ens_loss(gen, tgt)[0]
+            else:
+                loss = loss + ((d - target_of(x, tr[:, t + 1])) ** 2 * em.area_w).mean()
+        return loss if last_only else loss / n
 
     def em_state(use_ema: bool):
         sd = {k: v for k, v in em.state_dict().items() if not k.startswith("corrector.")}
@@ -211,18 +274,36 @@ def main():
                         "meta": {"names": meta["names"], "diag_names": diag_names,
                                  "lat": meta["lat"], "lon": meta["lon"]}}, out / name)
 
+    ens_stats: dict = {}
+
     @torch.no_grad()
     def validate():
         em.eval()
         se = torch.zeros(N_PROG, device=dev, dtype=torch.float64)
+        spread2 = torch.zeros((), device=dev, dtype=torch.float64)  # ensemble variance (normalized)
+        err2 = torch.zeros((), device=dev, dtype=torch.float64)  # ensemble-mean error^2 (normalized)
+        crps_sum = torch.zeros((), device=dev, dtype=torch.float64)
         lsum, n = 0.0, 0
         idx = range(rank, len(val), world)
         for i in range(0, len(idx), a.batch):
             traj = torch.stack([torch.from_numpy(val[j]) for j in list(idx)[i:i + a.batch]]).to(dev)
             x0 = traj[:, 0, :N_ALL]
-            pred, d, _ = predict(x0, None, traj[:, 1, N_PROG:N_ALL])
-            target = target_of(x0, traj[:, 1])
-            lsum += float(((d - target) ** 2 * em.area_w).mean()) * len(traj)
+            if ens_loss is not None:
+                tr = members(traj)
+                nxt, d, _ = predict(tr[:, 0, :N_ALL], None, tr[:, 1, N_PROG:N_ALL])
+                gen = ens_gen(nxt, d, traj[:, 0])
+                tgt = target_of(x0, traj[:, 1])[:, None]
+                l, parts = ens_loss(gen, tgt)
+                lsum += float(l) * len(traj)
+                crps_sum += float(parts.get("crps", 0.0)) * len(traj)
+                mean = gen.mean(1)
+                spread2 += (gen.var(1) * em.area_w).mean().double() * len(traj)
+                err2 += (((mean - tgt[:, 0]) ** 2) * em.area_w).mean().double() * len(traj)
+                pred = nxt.reshape(-1, n_ens, *nxt.shape[1:]).mean(1)
+            else:
+                pred, d, _ = predict(x0, None, traj[:, 1, N_PROG:N_ALL])
+                target = target_of(x0, traj[:, 1])
+                lsum += float(((d - target) ** 2 * em.area_w).mean()) * len(traj)
             se += (((pred - traj[:, 1, :N_PROG]) ** 2) * em.area_w).mean((2, 3)).sum(0).double()
             n += len(traj)
         # rollouts (unbatched across ranks for simplicity: rank 0 only)
@@ -230,17 +311,25 @@ def main():
         nr = 0
         if rank == 0:
             for j in range(len(roll)):
-                traj = torch.from_numpy(roll[j])[None].to(dev)
+                traj = members(torch.from_numpy(roll[j])[None].to(dev))  # n members of one start
                 state, ref = traj[:, 0, :N_PROG], None
                 for t in range(a.rollout_steps):
                     state, _, ref = predict(torch.cat([state, traj[:, t, N_PROG:N_ALL]], 1), ref,
                                             traj[:, t + 1, N_PROG:N_ALL])
-                    rse[t] += ((state - traj[:, t + 1, :N_PROG]) ** 2 * em.area_w).mean((0, 2, 3)).double()
+                    ens_mean = state.mean(0, keepdim=True)  # the ensemble mean (one member: itself)
+                    rse[t] += ((ens_mean - traj[:1, t + 1, :N_PROG]) ** 2 * em.area_w).mean((0, 2, 3)).double()
                 nr += 1
         tot = torch.tensor([lsum, n], device=dev, dtype=torch.float64)
+        ens = torch.stack([spread2, err2, crps_sum])
         if ddp:
             dist.all_reduce(tot)
             dist.all_reduce(se)
+            dist.all_reduce(ens)
+        ens_stats.clear()
+        if ens_loss is not None:
+            # unbiased-ish spread/skill: sqrt((n+1)/n * var) vs RMSE of the mean (Fortin et al. 2014)
+            ratio = float(((n_ens + 1) / n_ens * ens[0] / ens[1]).sqrt())
+            ens_stats.update(crps=float(ens[2] / tot[1]), spread_skill=ratio)
         em.train()
         rmse1 = (se / tot[1]).sqrt().cpu().numpy()
         rmser = (rse / max(nr, 1)).sqrt().cpu().numpy()
@@ -255,7 +344,11 @@ def main():
             sampler.set_epoch(epoch)
         for traj in dl:
             traj = traj.to(dev, non_blocking=True)
-            loss = loss_fn(traj)
+            n_this = a.n_steps
+            if a.min_steps:  # the same draw on every rank: seeded by the global step
+                import random as _random
+                n_this = _random.Random(10_007 * step + 1).randint(a.min_steps, a.n_steps)
+            loss = loss_fn(traj, n_this)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             gn = torch.nn.utils.clip_grad_norm_(em.net.parameters(), 1.0)
@@ -297,9 +390,12 @@ def main():
             log(f"== epoch {epoch} val loss {vloss:.4f} (best {best:.4f})")
             log("   1-step RMSE: " + " ".join(f"{k}={v:.3g}" for k, v in rep.items()))
             log(f"   {a.rollout_steps}-step RMSE: " + " ".join(f"{k}={v:.3g}" for k, v in r5.items()))
+            if ens_stats:
+                log(f"   ensemble ({n_ens}): 1-step CRPS {ens_stats['crps']:.4f}, "
+                    f"spread/skill {ens_stats['spread_skill']:.3f}  (RMSEs above are of the mean)")
             with open(out / "metrics.jsonl", "a") as f:
                 f.write(json.dumps({"epoch": epoch, "step": step, "val_loss": vloss, "rmse_1step": rep,
-                                    f"rmse_{a.rollout_steps}step": r5}) + "\n")
+                                    f"rmse_{a.rollout_steps}step": r5, **ens_stats}) + "\n")
     if ddp:
         dist.barrier()
         dist.destroy_process_group()

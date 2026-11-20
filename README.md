@@ -66,4 +66,16 @@ Notebooks: [`notebooks/`](notebooks/) (00 quickstart … 07 exege circuits and l
 | `vit_interp/data.py`, `train.py`, `evaluate.py`, `corrector.py` | data prep, training, evaluation, ACE-style correctors |
 | `scripts/` | PBS jobs, the results-page and explorer builders |
 
-Branches `v3-stochastic` and `v4-longroll` hold the stochastic (CRPS) and long-rollout versions.
+## Stochastic models (v3, v4)
+
+`pg.load("v3")` / `pg.load("v4")` load the stochastic models: every LayerNorm is noise-conditioned,
+`LN(x) * (1 + W_scale(z)) + W_bias(z)` with per-token noise `z` (as ACE2S's ConditionalLayerNorm,
+zero-initialized), trained with CRPS on 2-member ensembles. The residual stream and every hook are
+unchanged; new hooks `hook_noise`, `{ln}.hook_cond_scale`, `{ln}.hook_cond_bias`.
+
+- `em.step(x)` draws fresh noise on every call; pass `generator=` to make it reproducible, or
+  `noise=torch.zeros(1, 4050, em.cfg.noise_dim)` for the noise-free path. `em.rollout(..., seed=s)`,
+  `em.ensemble(x, n, seed)`; `python -m vit_interp.evaluate --members N`.
+- exege adapters draw one noise field from their `seed` option and share it across every patched run,
+  so patching stays exact and responses are measured under common random numbers.
+- v4 adds `--min-steps` (random rollout length) and `--grad-last-only` (gradient through the last step).

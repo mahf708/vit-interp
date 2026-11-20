@@ -22,6 +22,9 @@ things and showing results (maps, tables) over writing new infrastructure: almos
 - Output: the normalized 6-h tendency. **v2 has 44 output channels** (34 tendencies + 10 ACE diagnostics:
   precipitation, LHFLX, SHFLX, radiative fluxes, moisture advection); v1 has 34. Always slice `[:, :34]`
   before multiplying by `em.res_std`. `em.step(x)` returns `(next_state, normalized_output)` and already does this.
+- **v3/v4 are stochastic** (32-dim per-token noise into every LayerNorm, `em.cfg.noise_dim`): `em.step(x)`
+  draws fresh noise per call. Pass `generator=` or `noise=` (zeros = noise-free path) for repeatable results;
+  exege adapters fix one noise field per `seed`. v1/v2 are deterministic.
 - The skip (`x + tendency`) and the conservation correctors are outside the network: they never enter hooks,
   circuits or LAWFUL measurements.
 
@@ -29,7 +32,7 @@ things and showing results (maps, tables) over writing new infrastructure: almos
 
 ```python
 from vit_interp import playground as pg
-em, meta = pg.load()                 # "v1" / "v2" / a path; downloads off LCRC
+em, meta = pg.load()                 # "v1".."v4" / a path; downloads off LCRC
 x = pg.state("2010-01-15T00")        # any 2010 time label prefix, or an index 0..1459
 cache = {}; em.step(x.to(next(em.parameters()).device), cache=cache, names={"blocks.5.hook_resid_post"})
 ```
