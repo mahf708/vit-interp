@@ -1,0 +1,32 @@
+#!/bin/bash
+# Precompute exege assets for a released checkpoint: latent archives (January and July 2010, every
+# block's residual stream) and sparse autoencoders on three blocks, saved in each archive's bases/.
+#   qsub -v CKPT=.../release/v2.pt,NAME=v2 scripts/make_assets.pbs
+#PBS -A E3SM
+#PBS -q gpu
+#PBS -N vit-assets
+#PBS -l select=1:ngpus=1
+#PBS -l walltime=03:00:00
+#PBS -j oe
+#PBS -o logs/
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$HOME/vit-interp}"
+CKPT=${CKPT:?set CKPT}; NAME=${NAME:?set NAME}
+A=/lcrc/globalscratch/ac.ngmahfouz/vit-interp/archives
+mkdir -p $A
+X=.venv/bin/exege
+for M in jan:0 jul:724; do
+  tag=${M%%:*}; start=${M##*:}            # 2010-07-01T00 is step 724 of the noleap year
+  out=$A/$NAME-2010-$tag
+  echo "$(date) export $out"
+  .venv/bin/python -m vit_interp.export "$CKPT" "$out" --year 2010 --start $start --n 120 --embed --overwrite
+  $X latents info "$out" | head -20
+  mkdir -p "$out/bases"
+  for L in 3 5 8; do                      # archive layers: 0 = embed, i + 1 = block i
+    echo "$(date) SAE on archive layer $L"
+    $X nn sae "$out" --layer $L --features 1024 --activation topk --k 32 --epochs 6 --device cuda \
+      --out "$out/bases/sae-topk32-layer$L.npz"
+  done
+done
+chmod -R a+rX $A
+echo "$(date) done"
