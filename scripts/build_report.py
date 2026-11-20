@@ -88,8 +88,10 @@ VERSIONS = [
         "run": "vit3-p4-d384-l8",
         "checkpoint": "vit-p4-d384-l8/release/v3.pt",
         "headline_eval": "eval-ft8",
-        "stages": [("one-step", "stage1"), ("4-step rollouts", "ft4"), ("8-step rollouts", "ft8")],
-        "evals": [("ensemble, rollout-tuned", "eval-ft8")],
+        "stages": [("one-step, 12 epochs", "stage1"), ("4-step rollouts", "ft4"), ("8-step rollouts", "ft8"),
+                   ("8-step rollouts, extended", "ft8b")],
+        "evals": [("rollout-tuned (1 epoch at 8 steps)", "eval-ft8"),
+                  ("+ 6 more epochs at 8 steps (4-member ensemble)", "eval-ft8b")],
         "recipe": [
             "As v2, plus noise-conditioned LayerNorms (per-token noise embedding modulates every norm's scale and shift; zero-initialized), as in ACE2S.",
             "Loss: fair CRPS over 2 members per sample, replacing MSE (ACE adds 0.1 × a spectral energy score; we leave it out: CRPS is the proper per-point score that calibrates the ensemble, and our spectral transform is not ACE's).",
