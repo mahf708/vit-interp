@@ -94,13 +94,15 @@ class Emulator(nn.Module):
 
     @torch.no_grad()
     def rollout(self, traj, n_steps: int, prescribe_ocean_ts: bool = True, hooks_at=None, record=None,
-                correct: bool = False, seed: int | None = None):
+                correct: bool = False, seed: int | None = None, smooth=None):
         """traj: (B, T>=n_steps+1, C, H, W) physical truth (forcings are read from it).
 
         hooks_at: optional fn(step) -> hooks dict.  record: optional set of hook names to
         cache at every step; returns (states (B, n_steps+1, N_PROG, H, W), [cache per step]).
         correct: apply the attached corrector at every step (dry air pinned to the start).
         seed: stochastic models draw their noise from a generator with this seed (reproducible).
+        smooth: a ``vit_interp.filters.SeamFilter`` applied to every step's increment (after the
+        correctors, before ocean TS is prescribed); recommended for runs longer than a few weeks.
         """
         gen = None
         if seed is not None and self.cfg.noise_dim:
@@ -117,6 +119,8 @@ class Emulator(nn.Module):
                                                     generator=gen)
             else:
                 state, _ = self.step(x, hooks=hooks, cache=cache, names=record, generator=gen)
+            if smooth is not None:
+                state = smooth.apply(x[:, :N_PROG], state)
             if prescribe_ocean_ts:  # AMIP: SST is a boundary condition
                 ocean = traj[:, t + 1, OCNFRAC] > 0.5
                 state[:, TS] = torch.where(ocean, traj[:, t + 1, TS], state[:, TS])

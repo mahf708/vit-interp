@@ -67,9 +67,12 @@ def default_checkpoint() -> Path:
     return resolve_checkpoint("v2")  # off LCRC: the released v2 from Hugging Face
 
 
-def load(ckpt: str | Path | None = None, device: str | None = None, data: str = DATA_ROOT):
+def load(ckpt: str | Path | None = None, device: str | None = None, data: str = DATA_ROOT,
+         correct: str | None = None):
     """(emulator, meta). The emulator is in eval mode, float32, on ``device`` (cuda if any).
-    The checkpoint is ``ckpt``, else ``$PLAYGROUND_CKPT``, else the run's best."""
+    The checkpoint is ``ckpt``, else ``$PLAYGROUND_CKPT``, else the run's best. The conservation
+    correctors the checkpoint was trained with are attached (``correct="none"`` to leave them
+    off); ``rollout`` applies them, single steps and hooks never do."""
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     if device == "cuda":
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -80,6 +83,9 @@ def load(ckpt: str | Path | None = None, device: str | None = None, data: str = 
     em = em.to(device).eval()
     for p in em.parameters():
         p.requires_grad_(False)
+    from .corrector import attach
+
+    attach(em, ck, meta(data), correct)
     print(f"loaded {path} (epoch {ck.get('epoch')}, step {ck.get('step')}) on {device}")
     return em, meta(data)
 
@@ -127,11 +133,22 @@ def step(em, x, hooks=None, cache=None, names=None):
 
 
 @torch.no_grad()
-def rollout(em, t: str | int = 0, steps: int = 20, year: int = 2010):
+def rollout(em, t: str | int = 0, steps: int = 20, year: int = 2010, correct: bool = True,
+            seed: int | None = None, smooth: bool = False):
     """(emulated, true) prognostic trajectories, each (steps + 1, 34, 180, 360), from E3SM's
-    state at ``t`` with true forcings and prescribed ocean TS."""
-    tr = truth(t, steps, year, device=next(em.parameters()).device)
-    states, _ = em.rollout(tr, steps)
+    state at ``t`` with true forcings and prescribed ocean TS, applying the conservation
+    correctors (as the published evaluations do; ``correct=False`` for the raw network).
+    ``seed`` makes a stochastic model's (v3, v4) noise reproducible. ``smooth=True`` applies the
+    seam filter (``vit_interp.filters``) at every step: use it for runs longer than a few weeks,
+    where patch-scale noise otherwise grows until the run destabilizes."""
+    dev = next(em.parameters()).device
+    tr = truth(t, steps, year, device=dev)
+    filt = None
+    if smooth:
+        from .filters import SeamFilter
+
+        filt = SeamFilter(meta()["lat"], tr.shape[-1]).to(dev)
+    states, _ = em.rollout(tr, steps, correct=correct, seed=seed, smooth=filt)
     return states[0].cpu(), tr[0, :, :N_PROG].cpu()
 
 

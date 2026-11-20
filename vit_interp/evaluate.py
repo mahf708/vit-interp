@@ -96,8 +96,8 @@ class Stepper:
     """One step of the emulator; with a corrector attached to ``em``, the corrected step, with
     the dry-air mass pinned to the value at the last ``reset`` (the start of a run)."""
 
-    def __init__(self, em, device):
-        self.em, self.device = em, device
+    def __init__(self, em, device, smooth=None):
+        self.em, self.device, self.smooth = em, device, smooth
         self.ref = None
 
     def reset(self):
@@ -111,6 +111,8 @@ class Stepper:
         nxt, diag = self.em.physical(x, d)
         if self.em.corrector is not None:
             nxt, _, self.ref = self.em.corrector(x, nxt, diag, self.ref, forcing_next)
+        if self.smooth is not None:
+            nxt = self.smooth.apply(state, nxt)
         return nxt
 
 
@@ -395,6 +397,9 @@ def main(argv=None):
     p.add_argument("--year", type=int, default=2010)
     p.add_argument("--days", type=float, default=365)
     p.add_argument("--data", default=DATA_ROOT)
+    p.add_argument("--filter", type=float, default=0.0,
+                   help="seam filter: damp each step's increment above this zonal wavenumber (60 recommended)")
+    p.add_argument("--shapiro", type=int, default=0, help="seam filter: 1-2-1 latitude passes (1 recommended)")
     p.add_argument("--n-starts", type=int, default=8)
     p.add_argument("--lead-days", type=float, default=10)
     p.add_argument("--members", type=int, default=1, help="ensemble members for the skill (stochastic models)")
@@ -418,7 +423,7 @@ def main(argv=None):
     flags = a.correct if a.correct is not None else (ck.get("args") or {}).get("corrector", "")
     flags = {f for f in (flags or "").split(",") if f and f != "none"}
     if flags:
-        from .corrector import Corrector, CorrectorConfig
+        from .corrector import Corrector, CorrectorConfig, diag_names_of
 
         heat = float((ck.get("args") or {}).get("unaccounted_heating", 0.0))
         ccfg = CorrectorConfig(**{k: k in flags for k in ("dry_air", "positive", "moisture", "energy")},
@@ -427,11 +432,17 @@ def main(argv=None):
 
         ak, bk = vertical_coordinate(meta)
         em.corrector = Corrector(ccfg, lat, ak, bk,
-                                 diag_names=meta.get("diag_names", [])).to(dev)
+                                 diag_names=diag_names_of(ck)).to(dev)
         log(f"corrector: {sorted(flags)}")
     if a.seed is not None:
         torch.manual_seed(a.seed)  # the stochastic model's noise draws
-    step = Stepper(em, dev)
+    smooth = None
+    if a.filter or a.shapiro:
+        from .filters import SeamFilter
+
+        smooth = SeamFilter(lat, len(lon), a.filter, a.shapiro).to(dev)
+        log(f"seam filter: zonal kc {a.filter}, {a.shapiro} latitude pass(es)")
+    step = Stepper(em, dev, smooth)
     w = _weights(lat)
     arr, times = _arr(a.data, a.year), _times(a.data, a.year)
     n_steps = min(int(round(a.days * 4)), arr.shape[0] - 1)

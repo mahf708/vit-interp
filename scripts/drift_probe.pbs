@@ -1,0 +1,13 @@
+#!/bin/bash
+# qsub -v CKPT=v4,DAYS=200,TAG=v4 scripts/drift_probe.pbs   (extra args: ARGS="--correct none")
+#PBS -A E3SM
+#PBS -q gpu
+#PBS -N vit-drift
+#PBS -l select=1:ngpus=1
+#PBS -l walltime=01:00:00
+#PBS -j oe
+#PBS -o logs/
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$HOME/vit-interp}"
+.venv/bin/python scripts/drift_probe.py --ckpt "$CKPT" --days "${DAYS:-200}" ${ARGS:-} \
+  --out /lcrc/globalscratch/ac.ngmahfouz/vit-interp/drift/probe-${TAG}.npz

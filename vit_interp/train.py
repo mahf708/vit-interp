@@ -92,6 +92,9 @@ def main():
     p.add_argument("--init", default=None, help="weights to start from (fine-tuning)")
     p.add_argument("--compile", action="store_true")
     p.add_argument("--head-conv", type=int, default=0, help="k x k output convolution (0: none)")
+    p.add_argument("--smooth-kc", type=float, default=0.0,
+                   help="seam filter in training steps (vit_interp.filters): zonal cutoff (0: off)")
+    p.add_argument("--smooth-lat", type=int, default=0, help="seam filter: 1-2-1 latitude passes")
     p.add_argument("--ema", type=float, default=0.0, help="EMA decay of the weights (0: off)")
     p.add_argument("--input-noise", type=float, default=0.0,
                    help="std of noise on prognostic inputs, in units of each field's std")
@@ -196,6 +199,13 @@ def main():
     net = DDP(em.net, device_ids=[local], broadcast_buffers=False) if ddp else em.net  # rank-0-only rollouts
     fwd = torch.compile(net) if a.compile else net
 
+    smooth = None
+    if a.smooth_kc or a.smooth_lat:
+        from .filters import SeamFilter
+
+        smooth = SeamFilter(meta["lat"], len(meta["lon"]), a.smooth_kc, a.smooth_lat).to(dev)
+        log(f"seam filter in training: kc {a.smooth_kc}, {a.smooth_lat} latitude pass(es)")
+
     def predict(x, ref=None, forcing_next=None):
         """physical (B, 39, H, W) -> (next prog physical, normalized output, ref dry mass).
         The output is corrected (if a corrector is attached) and re-normalized."""
@@ -204,6 +214,9 @@ def main():
         nxt, diag = em.physical(x, d)
         if em.corrector is not None:
             nxt, diag, ref = em.corrector(x[:, :N_ALL], nxt, diag, ref, forcing_next)
+            d = em.normalized(x, nxt, diag)
+        if smooth is not None:  # as at inference: filter the increment, after the correctors
+            nxt = smooth.apply(x[:, :N_PROG], nxt)
             d = em.normalized(x, nxt, diag)
         return nxt, d.float(), ref
 

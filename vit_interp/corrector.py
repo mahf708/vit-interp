@@ -230,3 +230,35 @@ class Corrector(torch.nn.Module):
             t_mask[T_IDX] = 1.0
             prog = prog + t_mask[None, :, None, None] * dT[:, None, None, None]
         return prog, diag, ref_dry_mass
+
+
+def diag_names_of(ck: dict) -> list[str]:
+    """The diagnostic output channels of a checkpoint (saved in its ``meta``; v2 and later)."""
+    names = (ck.get("meta") or {}).get("diag_names")
+    if names is None and (ck.get("cfg") or {}).get("out_chans", N_PROG) > N_PROG:
+        from .data import DIAG_NAMES
+
+        names = list(DIAG_NAMES)
+    return list(names or [])
+
+
+def attach(em, ck: dict, meta: dict, flags: str | None = None):
+    """Attach the conservation correctors to ``em`` as ``vit_interp.evaluate`` does: ``flags``
+    (``"dry_air,positive,moisture,energy"``, ``"none"``) or, by default, the ones the checkpoint
+    was trained with; v1 (trained without) gets dry air and positivity. Only corrected steps
+    (``em.step_corrected``, ``em.rollout(correct=True)``) use them; ``em.step`` never does."""
+    from .data import vertical_coordinate
+
+    args = ck.get("args") or {}
+    if flags is None:
+        flags = args.get("corrector") or "dry_air,positive"
+    names = {f for f in flags.replace("+", ",").split(",") if f and f != "none"}
+    if not names:
+        em.corrector = None
+        return em
+    cfg = CorrectorConfig(**{k: k in names for k in ("dry_air", "positive", "moisture", "energy")},
+                          unaccounted_heating=float(args.get("unaccounted_heating", 0.0)))
+    ak, bk = vertical_coordinate(meta)
+    dev = next(em.parameters()).device
+    em.corrector = Corrector(cfg, meta["lat"], ak, bk, diag_names=diag_names_of(ck)).to(dev)
+    return em
