@@ -92,6 +92,9 @@ def main():
     p.add_argument("--init", default=None, help="weights to start from (fine-tuning)")
     p.add_argument("--compile", action="store_true")
     p.add_argument("--head-conv", type=int, default=0, help="k x k output convolution (0: none)")
+    p.add_argument("--train-jitter", default="",
+                   help="shift the patch grid by a random sub-patch offset at every training forward "
+                        "(vit_interp.filters.PatchJitter; 'random'); validation is unshifted")
     p.add_argument("--smooth-kc", type=float, default=0.0,
                    help="seam filter in training steps (vit_interp.filters): zonal cutoff (0: off)")
     p.add_argument("--smooth-lat", type=int, default=0, help="seam filter: 1-2-1 latitude passes")
@@ -206,11 +209,19 @@ def main():
         smooth = SeamFilter(meta["lat"], len(meta["lon"]), a.smooth_kc, a.smooth_lat).to(dev)
         log(f"seam filter in training: kc {a.smooth_kc}, {a.smooth_lat} latitude pass(es)")
 
+    jitter = None
+    if a.train_jitter:
+        from .filters import PatchJitter
+
+        jitter = PatchJitter(cfg.patch, a.train_jitter, seed=1000 + rank)
+        log(f"patch jitter in training: {a.train_jitter}")
+
     def predict(x, ref=None, forcing_next=None):
         """physical (B, 39, H, W) -> (next prog physical, normalized output, ref dry mass).
         The output is corrected (if a corrector is attached) and re-normalized."""
         with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
-            d = fwd(em.normalize(x))
+            xn = em.normalize(x)
+            d = jitter(fwd, xn) if (jitter is not None and em.training) else fwd(xn)
         nxt, diag = em.physical(x, d)
         if em.corrector is not None:
             nxt, diag, ref = em.corrector(x[:, :N_ALL], nxt, diag, ref, forcing_next)
