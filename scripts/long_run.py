@@ -41,6 +41,10 @@ def main():
                    help="increment damping for every channel: state + (1 - damp) * increment")
     p.add_argument("--damp-top", type=float, default=None, help="damping for the top --damp-top-levels levels")
     p.add_argument("--damp-top-levels", type=int, default=2)
+    p.add_argument("--damp-small", type=float, default=0.0,
+                   help="scale-selective damping: remove this fraction of the increment's small-scale part "
+                        "(what a kc=30, 2-pass smoother takes out); --damp-small-top for the top levels")
+    p.add_argument("--damp-small-top", type=float, default=None)
     p.add_argument("--jitter", default="", help="patch jitter mode: cycle16, lon, random")
     p.add_argument("--out", required=True)
     a = p.parse_args()
@@ -63,6 +67,16 @@ def main():
                     sc[i] = 1.0 - a.damp_top
         scale = sc.to(dev)[None, :, None, None]
         print("increment scale:", {n: round(float(v), 3) for n, v in zip(PROG_NAMES, sc) if v != 1.0}, flush=True)
+    small = small_frac = None
+    if a.damp_small or a.damp_small_top:
+        small = SeamFilter(lat, len(meta["lon"]), 30.0, 2).to(dev)
+        fr = torch.full((N_PROG,), a.damp_small)
+        if a.damp_small_top is not None:
+            for i, nme in enumerate(PROG_NAMES):
+                if "_" in nme and nme.rsplit("_", 1)[1].isdigit() and int(nme.rsplit("_", 1)[1]) < a.damp_top_levels:
+                    fr[i] = a.damp_small_top
+        small_frac = fr.to(dev)[None, :, None, None]
+        print("small-scale damping:", {n: round(float(v), 2) for n, v in zip(PROG_NAMES, fr) if v}, flush=True)
     # diagnostics: day-to-day variability per channel, and Nino-3.4 box means (SST response)
     dd_e = torch.zeros(N_PROG, device=dev, dtype=torch.float64); dd_t = torch.zeros_like(dd_e); ndd = 0
     prev_e = prev_t = None
@@ -93,6 +107,10 @@ def main():
             state = step(state, forcing, truth[:, N_PROG:N_ALL])
             if scale is not None:
                 state = prev_state + scale * (state - prev_state)
+            if small is not None:
+                inc = state - prev_state
+                low = small(inc)
+                state = prev_state + low + (1 - small_frac) * (inc - low)
             if a.prescribe == "nonland":
                 sea = truth[:, LANDFRAC] < 0.5
                 state[:, TS] = torch.where(sea, truth[:, TS], state[:, TS])
@@ -134,7 +152,7 @@ def main():
                         dd_e=(dd_e / max(ndd, 1)).sqrt().cpu().numpy(), dd_t=(dd_t / max(ndd, 1)).sqrt().cpu().numpy(),
                         nino_e=np.array(nino_e), nino_t=np.array(nino_t),
                         nino_names=np.array(["T_7", "U_7", "specific_total_water_7", "T_3", "U_3"]),
-                        damp=a.damp, damp_top=-1 if a.damp_top is None else a.damp_top, years=a.years, blow=json.dumps(blow),
+                        damp_small=a.damp_small, damp=a.damp, damp_top=-1 if a.damp_top is None else a.damp_top, years=a.years, blow=json.dumps(blow),
                         filter=a.filter, shapiro=a.shapiro, ckpt=str(a.ckpt))
     print(f"wrote {a.out}; blow-up: {blow}", flush=True)
 
