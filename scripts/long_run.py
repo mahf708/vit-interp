@@ -37,6 +37,10 @@ def main():
     p.add_argument("--prescribe", choices=["ocean", "nonland"], default="ocean",
                    help="where TS is prescribed: open ocean (OCNFRAC > 0.5, as evaluate) or every non-land cell (sea ice too)")
     p.add_argument("--clamp-ts", default="", help="e.g. 180,340: clip emulated TS to this range (K)")
+    p.add_argument("--damp", type=float, default=0.0,
+                   help="increment damping for every channel: state + (1 - damp) * increment")
+    p.add_argument("--damp-top", type=float, default=None, help="damping for the top --damp-top-levels levels")
+    p.add_argument("--damp-top-levels", type=int, default=2)
     p.add_argument("--jitter", default="", help="patch jitter mode: cycle16, lon, random")
     p.add_argument("--out", required=True)
     a = p.parse_args()
@@ -50,6 +54,23 @@ def main():
     smooth = SeamFilter(lat, len(meta["lon"]), a.filter, a.shapiro).to(dev) if (a.filter or a.shapiro) else None
     from vit_interp.filters import PatchJitter
     step = Stepper(em, dev, smooth, PatchJitter(em.cfg.patch, a.jitter) if a.jitter else None)
+    scale = None
+    if a.damp or a.damp_top:
+        sc = torch.full((N_PROG,), 1.0 - a.damp)
+        if a.damp_top is not None:
+            for i, nme in enumerate(PROG_NAMES):
+                if "_" in nme and nme.rsplit("_", 1)[1].isdigit() and int(nme.rsplit("_", 1)[1]) < a.damp_top_levels:
+                    sc[i] = 1.0 - a.damp_top
+        scale = sc.to(dev)[None, :, None, None]
+        print("increment scale:", {n: round(float(v), 3) for n, v in zip(PROG_NAMES, sc) if v != 1.0}, flush=True)
+    # diagnostics: day-to-day variability per channel, and Nino-3.4 box means (SST response)
+    dd_e = torch.zeros(N_PROG, device=dev, dtype=torch.float64); dd_t = torch.zeros_like(dd_e); ndd = 0
+    prev_e = prev_t = None
+    la_, lo_ = torch.tensor(lat), torch.tensor(np.asarray(meta["lon"]))
+    box = ((la_.abs() <= 5)[:, None] & ((lo_ >= 190) & (lo_ <= 240))[None, :]).to(dev)
+    bw = (box * torch.tensor(w, device=dev)[:, None]).double(); bw = bw / bw.sum()
+    NINO = [PROG_NAMES.index(n) for n in ("T_7", "U_7", "specific_total_water_7", "T_3", "U_3")]
+    nino_e, nino_t = [], []
     ts_lo, ts_hi = (float(x) for x in a.clamp_ts.replace(":", ",").split(",")) if a.clamp_ts else (None, None)
     y0, y1 = (int(x) for x in a.years.split("-"))
     w = _weights(lat)
@@ -68,7 +89,10 @@ def main():
         for t in range(n):
             forcing = _to(dev, arr[t][None, N_PROG:N_ALL])
             truth = _to(dev, arr[t + 1][None, :N_ALL])
+            prev_state = state
             state = step(state, forcing, truth[:, N_PROG:N_ALL])
+            if scale is not None:
+                state = prev_state + scale * (state - prev_state)
             if a.prescribe == "nonland":
                 sea = truth[:, LANDFRAC] < 0.5
                 state[:, TS] = torch.where(sea, truth[:, TS], state[:, TS])
@@ -83,6 +107,11 @@ def main():
             if k % 4:
                 continue
             err = (state[0] - truth[0, :N_PROG]).double()
+            se, st = state[0].double(), truth[0, :N_PROG].double()
+            if prev_e is not None:
+                dd_e += gmean((se - prev_e) ** 2); dd_t += gmean((st - prev_t) ** 2); ndd += 1
+            prev_e, prev_t = se, st
+            nino_e.append((se[NINO] * bw).sum((-2, -1)).cpu().numpy()); nino_t.append((st[NINO] * bw).sum((-2, -1)).cpu().numpy())
             g_e.append(gmean(state[0]).cpu().numpy()); g_t.append(gmean(truth[0, :N_PROG]).cpu().numpy())
             maxerr.append(float(err[i3].abs().max()))
             fe = (torch.fft.rfft(state[0, i3].double(), dim=-1).abs() ** 2 * cw).sum(0)
@@ -101,7 +130,11 @@ def main():
               f"k90 x{k90[-1]:.0f}", flush=True)
     np.savez_compressed(a.out, g_e=np.array(g_e), g_t=np.array(g_t), maxerr=np.array(maxerr), k90=np.array(k90),
                         mon_maps=np.array(mon_maps), map_names=np.array(MAPS), names=np.array(PROG_NAMES),
-                        lat=lat, lon=np.asarray(meta["lon"]), years=a.years, blow=json.dumps(blow),
+                        lat=lat, lon=np.asarray(meta["lon"]),
+                        dd_e=(dd_e / max(ndd, 1)).sqrt().cpu().numpy(), dd_t=(dd_t / max(ndd, 1)).sqrt().cpu().numpy(),
+                        nino_e=np.array(nino_e), nino_t=np.array(nino_t),
+                        nino_names=np.array(["T_7", "U_7", "specific_total_water_7", "T_3", "U_3"]),
+                        damp=a.damp, damp_top=-1 if a.damp_top is None else a.damp_top, years=a.years, blow=json.dumps(blow),
                         filter=a.filter, shapiro=a.shapiro, ckpt=str(a.ckpt))
     print(f"wrote {a.out}; blow-up: {blow}", flush=True)
 
