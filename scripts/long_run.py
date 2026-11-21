@@ -82,7 +82,7 @@ def main():
     prev_e = prev_t = None
     la_, lo_ = torch.tensor(lat), torch.tensor(np.asarray(meta["lon"]))
     box = ((la_.abs() <= 5)[:, None] & ((lo_ >= 190) & (lo_ <= 240))[None, :]).to(dev)
-    bw = (box * torch.tensor(w, device=dev)[:, None]).double(); bw = bw / bw.sum()
+    bw = (box * torch.tensor(_weights(lat), device=dev)[:, None]).double(); bw = bw / bw.sum()
     NINO = [PROG_NAMES.index(n) for n in ("T_7", "U_7", "specific_total_water_7", "T_3", "U_3")]
     nino_e, nino_t = [], []
     ts_lo, ts_hi = (float(x) for x in a.clamp_ts.replace(":", ",").split(",")) if a.clamp_ts else (None, None)
