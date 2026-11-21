@@ -96,8 +96,8 @@ class Stepper:
     """One step of the emulator; with a corrector attached to ``em``, the corrected step, with
     the dry-air mass pinned to the value at the last ``reset`` (the start of a run)."""
 
-    def __init__(self, em, device, smooth=None):
-        self.em, self.device, self.smooth = em, device, smooth
+    def __init__(self, em, device, smooth=None, jitter=None):
+        self.em, self.device, self.smooth, self.jitter = em, device, smooth, jitter
         self.ref = None
 
     def reset(self):
@@ -107,7 +107,8 @@ class Stepper:
     def __call__(self, state, forcing, forcing_next=None):
         x = torch.cat([state, forcing], 1)
         with torch.autocast(self.device.type, dtype=torch.bfloat16, enabled=self.device.type == "cuda"):
-            d = self.em.net(self.em.normalize(x))
+            xn = self.em.normalize(x)
+            d = self.jitter(self.em.net, xn) if self.jitter is not None else self.em.net(xn)
         nxt, diag = self.em.physical(x, d)
         if self.em.corrector is not None:
             nxt, _, self.ref = self.em.corrector(x, nxt, diag, self.ref, forcing_next)
@@ -400,6 +401,7 @@ def main(argv=None):
     p.add_argument("--filter", type=float, default=0.0,
                    help="seam filter: damp each step's increment above this zonal wavenumber (60 recommended)")
     p.add_argument("--shapiro", type=int, default=0, help="seam filter: 1-2-1 latitude passes (1 recommended)")
+    p.add_argument("--jitter", default="", help="patch jitter mode (cycle16, lon, random); empty = off")
     p.add_argument("--n-starts", type=int, default=8)
     p.add_argument("--lead-days", type=float, default=10)
     p.add_argument("--members", type=int, default=1, help="ensemble members for the skill (stochastic models)")
@@ -442,7 +444,13 @@ def main(argv=None):
 
         smooth = SeamFilter(lat, len(lon), a.filter, a.shapiro).to(dev)
         log(f"seam filter: zonal kc {a.filter}, {a.shapiro} latitude pass(es)")
-    step = Stepper(em, dev, smooth)
+    jit = None
+    if a.jitter:
+        from .filters import PatchJitter
+
+        jit = PatchJitter(em.cfg.patch, a.jitter)
+        log(f"patch jitter: {a.jitter}")
+    step = Stepper(em, dev, smooth, jit)
     w = _weights(lat)
     arr, times = _arr(a.data, a.year), _times(a.data, a.year)
     n_steps = min(int(round(a.days * 4)), arr.shape[0] - 1)

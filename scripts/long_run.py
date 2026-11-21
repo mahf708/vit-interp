@@ -37,6 +37,7 @@ def main():
     p.add_argument("--prescribe", choices=["ocean", "nonland"], default="ocean",
                    help="where TS is prescribed: open ocean (OCNFRAC > 0.5, as evaluate) or every non-land cell (sea ice too)")
     p.add_argument("--clamp-ts", default="", help="e.g. 180,340: clip emulated TS to this range (K)")
+    p.add_argument("--jitter", default="", help="patch jitter mode: cycle16, lon, random")
     p.add_argument("--out", required=True)
     a = p.parse_args()
     torch.manual_seed(a.seed)
@@ -47,7 +48,8 @@ def main():
     em = em.to(dev).eval()
     attach(em, ck, meta)
     smooth = SeamFilter(lat, len(meta["lon"]), a.filter, a.shapiro).to(dev) if (a.filter or a.shapiro) else None
-    step = Stepper(em, dev, smooth)
+    from vit_interp.filters import PatchJitter
+    step = Stepper(em, dev, smooth, PatchJitter(em.cfg.patch, a.jitter) if a.jitter else None)
     ts_lo, ts_hi = (float(x) for x in a.clamp_ts.replace(":", ",").split(",")) if a.clamp_ts else (None, None)
     y0, y1 = (int(x) for x in a.years.split("-"))
     w = _weights(lat)

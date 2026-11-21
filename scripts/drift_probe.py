@@ -39,6 +39,7 @@ def main():
     p.add_argument("--filter", type=float, default=0.0,
                    help="damp each step's increment above this zonal wavenumber (polar-scaled by cos lat); 0 = off")
     p.add_argument("--shapiro", type=int, default=0, help="1-2-1 passes in latitude on the increment")
+    p.add_argument("--jitter", default="", help="patch jitter mode: cycle16, lon, random")
     p.add_argument("--out", required=True)
     a = p.parse_args()
 
@@ -60,7 +61,8 @@ def main():
         em.corrector = Corrector(ccfg, lat, ak, bk, diag_names=diag_names_of(ck)).to(dev)
     print(f"{a.ckpt}: corrector {sorted(flags)}, noise_dim {em.cfg.noise_dim}", flush=True)
     em = em.to(dev).eval()
-    step = Stepper(em, dev)
+    from vit_interp.filters import PatchJitter
+    step = Stepper(em, dev, None, PatchJitter(em.cfg.patch, a.jitter) if a.jitter else None)
     filt = None
     if a.filter:  # a GCM-style polar/hyperdiffusion filter on the increment, outside the network
         k = torch.arange(len(meta["lon"]) // 2 + 1, device=dev, dtype=torch.float64)

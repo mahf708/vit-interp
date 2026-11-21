@@ -37,3 +37,47 @@ class SeamFilter(torch.nn.Module):
     def apply(self, state: torch.Tensor, nxt: torch.Tensor) -> torch.Tensor:
         """The filtered next state: state + filter(nxt − state)."""
         return state + self(nxt - state)
+
+
+class PatchJitter:
+    """Per-step sub-patch shift of the patch grid (after STRATA's ``tile_jitter``, NVlabs/STRATA).
+
+    Every step injects patch-period noise at the same phase, so it adds coherently and grows.
+    Running each step on the input shifted by ``(oy, ox)`` pixels (``cycle16``: all 16 offsets of a
+    4×4 patch in turn) puts each step's seam pattern at a different phase, so it cancels instead.
+    Longitude shifts are exact (periodic roll); latitude shifts replicate the polar rows. The
+    network itself never changes: ``jitter(net_fn, x)`` shifts ``x``, calls ``net_fn``, and shifts
+    the output back."""
+
+    def __init__(self, patch: int = 4, mode: str = "cycle16", seed: int = 0):
+        self.p, self.mode, self.t = patch, mode, 0
+        self.rng = np.random.default_rng(seed)
+
+    def next_shift(self) -> tuple[int, int]:
+        t, p = self.t, self.p
+        self.t += 1
+        if self.mode == "cycle16":
+            return (t // p) % p, t % p
+        if self.mode == "lon":
+            return 0, t % p
+        return int(self.rng.integers(0, p)), int(self.rng.integers(0, p))
+
+    @staticmethod
+    def _shift(x, oy: int, ox: int):
+        if ox:
+            x = torch.roll(x, -ox, dims=-1)
+        if oy:
+            x = torch.cat([x[..., oy:, :], x[..., -1:, :].expand(*x.shape[:-2], oy, x.shape[-1])], -2)
+        return x
+
+    @staticmethod
+    def _unshift(y, oy: int, ox: int):
+        if oy:
+            y = torch.cat([y[..., :1, :].expand(*y.shape[:-2], oy, y.shape[-1]), y[..., :-oy, :]], -2)
+        if ox:
+            y = torch.roll(y, ox, dims=-1)
+        return y
+
+    def __call__(self, net_fn, x):
+        oy, ox = self.next_shift()
+        return self._unshift(net_fn(self._shift(x, oy, ox)), oy, ox)
