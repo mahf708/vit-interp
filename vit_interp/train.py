@@ -92,6 +92,8 @@ def main():
     p.add_argument("--init", default=None, help="weights to start from (fine-tuning)")
     p.add_argument("--compile", action="store_true")
     p.add_argument("--head-conv", type=int, default=0, help="k x k output convolution (0: none)")
+    p.add_argument("--embed-filter", default="",
+                   help="anti-aliased patch embedding low-pass taps, e.g. 1,4,6,4,1 (model.ViTConfig.embed_filter)")
     p.add_argument("--train-jitter", default="",
                    help="shift the patch grid by a random sub-patch offset at every training forward "
                         "(vit_interp.filters.PatchJitter; 'random'); validation is unshifted")
@@ -139,7 +141,8 @@ def main():
     diag_names = meta.get("diag_names", [])
     cfg = ViTConfig(in_chans=N_ALL, out_chans=N_PROG + len(diag_names), img_size=(180, 360),
                     patch=a.patch, dim=a.dim, depth=a.depth, heads=a.heads, mlp_ratio=a.mlp_ratio,
-                    head_conv=a.head_conv, noise_dim=a.noise_dim, noise_type=a.noise_type)
+                    head_conv=a.head_conv, noise_dim=a.noise_dim, noise_type=a.noise_type,
+                    embed_filter=tuple(float(v) for v in a.embed_filter.split(",")) if a.embed_filter else ())
     em = Emulator(cfg, stats, meta["lat"]).to(dev)
     flags = {f for f in a.corrector.split(",") if f}
     if flags:

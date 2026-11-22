@@ -153,6 +153,7 @@ class Emulator(nn.Module):
         ck = torch.load(path, map_location=map_location, weights_only=False)
         cfg = dict(ck["cfg"])
         cfg["img_size"] = tuple(cfg["img_size"])
+        cfg["embed_filter"] = tuple(cfg.get("embed_filter") or ())
         em = cls(ViTConfig(**cfg), stats, lat)
         em.load_state_dict(ck["state_dict"])
         if corrector is not None:

@@ -37,3 +37,25 @@ def test_patch_jitter_identity_net_roundtrips_and_cycles_all_offsets():
     j2 = PatchJitter(4, "lon")
     out = j2(lambda z: z, x)
     assert torch.equal(out, x)
+
+
+def test_dealiased_embedding_identity_filter_equals_patchify_and_is_smooth_under_shift():
+    from vit_interp.model import ViT, ViTConfig
+
+    torch.manual_seed(0)
+    plain = ViT(ViTConfig(in_chans=5, out_chans=3, img_size=(40, 80), dim=32, depth=1, heads=2))
+    x = torch.randn(1, 5, 40, 80)
+    e_plain = plain.patch_embed(plain.patchify(x))
+    ident = ViT(ViTConfig(in_chans=5, out_chans=3, img_size=(40, 80), dim=32, depth=1, heads=2, embed_filter=(1.0,)))
+    ident.load_state_dict(plain.state_dict())
+    assert torch.allclose(ident.embed_dealiased(x), e_plain, atol=1e-5)
+    da = ViT(ViTConfig(in_chans=5, out_chans=3, img_size=(40, 80), dim=32, depth=1, heads=2,
+                       embed_filter=(1.0, 4.0, 6.0, 4.0, 1.0)))
+    da.load_state_dict(plain.state_dict())
+    e = da.embed_dealiased(x)
+    assert e.shape == e_plain.shape
+    # a 1-px longitude shift changes the anti-aliased tokens less than the plain ones
+    xs = torch.roll(x, 1, dims=-1)
+    d_plain = (plain.patch_embed(plain.patchify(xs)) - e_plain).norm()
+    d_da = (da.embed_dealiased(xs) - e).norm()
+    assert d_da < d_plain

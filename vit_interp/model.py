@@ -64,6 +64,10 @@ class ViTConfig:
     head_conv: int = 0  # k > 0: a k x k convolution on the full-resolution output
     noise_dim: int = 0  # d > 0: noise-conditioned LayerNorms (a stochastic emulator)
     noise_type: str = "gaussian"  # or "isotropic"
+    # anti-aliased patch embedding (after NVlabs/STRATA's DealiasedPatchEmbed): the same patch_embed
+    # weights applied as a stride-1 convolution, then this low-pass filter and stride-p decimation;
+    # empty = the plain non-overlapping patch embedding. (1, 4, 6, 4, 1) is STRATA's default.
+    embed_filter: tuple = ()
 
     @property
     def grid(self) -> tuple[int, int]:
@@ -219,6 +223,24 @@ class ViT(nn.Module):
                                      k // 2, k // 2] = 1.0
 
     # (B, C, H, W) <-> (B, N, C*p*p), tokens in row-major (lat, lon) order
+    def embed_dealiased(self, x):
+        """Shift-robust patch embedding: patch_embed as a stride-1 convolution (circular in
+        longitude, valid in latitude), a separable low-pass, then stride-p decimation. Token
+        (i, j) is centred on the same patch as the plain embedding's token (i, j)."""
+        B, C, H, W = x.shape
+        p, D = self.cfg.patch, self.cfg.dim
+        w = self.patch_embed.weight.view(D, C, p, p)  # the (C, p_lat, p_lon) order of patchify
+        s1 = F.conv2d(F.pad(x, (0, p - 1, 0, 0), mode="circular"), w.to(x.dtype), self.patch_embed.bias.to(x.dtype))
+        f = torch.as_tensor(self.cfg.embed_filter, dtype=s1.dtype, device=s1.device)
+        f = f / f.sum()
+        k = f.numel()
+        lo, hi = (k - 1) // 2, (k - 1) - (k - 1) // 2
+        s1 = F.pad(s1, (lo, hi, 0, 0), mode="circular")  # longitude wraps
+        s1 = F.pad(s1, (0, 0, lo, hi), mode="replicate")  # latitude: no zeros at the poles
+        f2 = (f[:, None] * f[None, :]).expand(D, 1, k, k)
+        e = F.conv2d(s1, f2, groups=D, stride=p)  # (B, D, H/p, W/p)
+        return e.flatten(2).transpose(1, 2)
+
     def patchify(self, x):
         B, C, H, W = x.shape
         p = self.cfg.patch
@@ -233,7 +255,7 @@ class ViT(nn.Module):
         return t.reshape(B, C, gh * p, gw * p)
 
     def embed(self, x, ctx: _Ctx):
-        e = ctx("hook_embed", self.patch_embed(self.patchify(x)))
+        e = ctx("hook_embed", self.embed_dealiased(x) if self.cfg.embed_filter else self.patch_embed(self.patchify(x)))
         pe = ctx("hook_pos_embed", self.pos_embed.expand(x.shape[0], -1, -1))
         return e + pe
 
