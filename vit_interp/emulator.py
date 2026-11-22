@@ -73,20 +73,26 @@ class Emulator(nn.Module):
             d = torch.cat([d, (diag - self.diag_mean) / self.diag_std], 1)
         return d
 
-    def step(self, x, hooks=None, cache=None, names=None, noise=None, generator=None):
+    def _net(self, x, hooks=None, cache=None, names=None, noise=None, generator=None, jitter=None):
+        """The network on the normalized state; ``jitter`` (a ``vit_interp.filters.PatchJitter``)
+        runs it on a sub-patch-shifted grid and shifts the output back (hooks then see the
+        shifted grid)."""
+        f = lambda z: self.net(z, hooks=hooks, cache=cache, names=names, noise=noise, generator=generator)  # noqa: E731
+        xn = self.normalize(x)
+        return jitter(f, xn) if jitter is not None else f(xn)
+
+    def step(self, x, hooks=None, cache=None, names=None, noise=None, generator=None, jitter=None):
         """x: physical state+forcing (B, >=39, H, W) -> (next prognostic state, normalized output).
         Uncorrected. The normalized output holds the diagnostics after the tendencies (v2).
         Stochastic models (cfg.noise_dim > 0): ``noise`` (B, N, d) or a ``generator``."""
-        d = self.net(self.normalize(x), hooks=hooks, cache=cache, names=names, noise=noise,
-                     generator=generator)
+        d = self._net(x, hooks, cache, names, noise, generator, jitter)
         return x[:, :N_PROG] + d[:, :N_PROG].float() * self.res_std, d
 
     def step_corrected(self, x, ref_dry_mass=None, hooks=None, cache=None, names=None, forcing_next=None,
-                       noise=None, generator=None):
+                       noise=None, generator=None, jitter=None):
         """One step through the corrector (if attached): (next prog, diagnostics, ref_dry_mass).
         ``forcing_next`` (B, 5, H, W): forcings at the output time (ACE's energy budget uses them)."""
-        d = self.net(self.normalize(x), hooks=hooks, cache=cache, names=names, noise=noise,
-                     generator=generator)
+        d = self._net(x, hooks, cache, names, noise, generator, jitter)
         nxt, diag = self.physical(x, d)
         if self.corrector is not None:
             nxt, diag, ref_dry_mass = self.corrector(x[:, :N_ALL], nxt, diag, ref_dry_mass, forcing_next)
@@ -94,7 +100,7 @@ class Emulator(nn.Module):
 
     @torch.no_grad()
     def rollout(self, traj, n_steps: int, prescribe_ocean_ts: bool = True, hooks_at=None, record=None,
-                correct: bool = False, seed: int | None = None, smooth=None):
+                correct: bool = False, seed: int | None = None, smooth=None, jitter=None):
         """traj: (B, T>=n_steps+1, C, H, W) physical truth (forcings are read from it).
 
         hooks_at: optional fn(step) -> hooks dict.  record: optional set of hook names to
@@ -103,6 +109,8 @@ class Emulator(nn.Module):
         seed: stochastic models draw their noise from a generator with this seed (reproducible).
         smooth: a ``vit_interp.filters.SeamFilter`` applied to every step's increment (after the
         correctors, before ocean TS is prescribed); recommended for runs longer than a few weeks.
+        jitter: a ``vit_interp.filters.PatchJitter`` (per-step sub-patch grid shifts); with
+        ``smooth``, what keeps v7 stable for a decade. Hooks then see the shifted grid.
         """
         gen = None
         if seed is not None and self.cfg.noise_dim:
@@ -116,9 +124,9 @@ class Emulator(nn.Module):
             if correct and self.corrector is not None:
                 state, _, ref = self.step_corrected(x, ref, hooks=hooks, cache=cache, names=record,
                                                     forcing_next=traj[:, t + 1, N_PROG:N_ALL],
-                                                    generator=gen)
+                                                    generator=gen, jitter=jitter)
             else:
-                state, _ = self.step(x, hooks=hooks, cache=cache, names=record, generator=gen)
+                state, _ = self.step(x, hooks=hooks, cache=cache, names=record, generator=gen, jitter=jitter)
             if smooth is not None:
                 state = smooth.apply(x[:, :N_PROG], state)
             if prescribe_ocean_ts:  # AMIP: SST is a boundary condition

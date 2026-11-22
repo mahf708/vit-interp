@@ -124,6 +124,51 @@ VERSIONS = [
         ],
         "changes": "long random-length rollouts with last-step gradient (stochastic, CRPS)",
     },
+    {
+        "name": "v5",
+        "title": "+ spectral energy score, 4–24-step rollouts",
+        "run": "vit5a-p4-d384-l8",
+        "checkpoint": "vit5a-p4-d384-l8/long/best.pt",
+        "headline_eval": "eval-long",
+        "stages": [("4–24-step rollouts, energy score", "long")],
+        "evals": [("v5 (4-member ensemble)", "eval-long"), ("+ seam filter (inference)", "eval-long-filter")],
+        "recipe": [
+            "v4 continued 4 epochs (lr 5e-5) with ACE's spectral energy score (0.1) beside CRPS (0.9), and random rollouts of 4–24 steps with the last-step gradient.",
+            "Aimed at the patch-seam instability (see <a href=\"../index.html#stability\">Stability</a>): it slowed the seam growth by about a third and lengthened free runs, at a cost in 10-day skill. Not released.",
+        ],
+        "changes": "spectral energy score; longer rollouts",
+    },
+    {
+        "name": "v6",
+        "title": "+ patch jitter in training",
+        "run": "vit6-p4-d384-l8",
+        "checkpoint": "vit6-p4-d384-l8/long/best.pt",
+        "headline_eval": "eval-long",
+        "stages": [("4–24-step rollouts, random patch-grid shifts", "long")],
+        "evals": [("v6", "eval-long"), ("+ patch jitter (inference)", "eval-long-jitter"),
+                  ("+ jitter + seam filter", "eval-long-jitter-filter")],
+        "recipe": [
+            "v5 continued 4 epochs (lr 3e-5) with the network's input shifted by a random sub-patch offset at every forward pass (output shifted back before the loss), after NVlabs STRATA's tile jitter.",
+            "Made the model ~50× more tolerant of shifted grids, but jitter alone still could not hold the climate. Not released.",
+        ],
+        "changes": "trained with patch jitter",
+    },
+    {
+        "name": "v7",
+        "title": "+ anti-aliased patch embedding: a decade-stable climate",
+        "run": "vit7-p4-d384-l8",
+        "checkpoint": "vit-p4-d384-l8/release/v7.pt",
+        "headline_eval": "eval-long",
+        "stages": [("4–24-step rollouts, jitter, anti-aliased embedding", "long")],
+        "evals": [("v7", "eval-long"), ("+ patch jitter (inference)", "eval-long-jitter"),
+                  ("+ jitter + seam filter (recommended for long runs)", "eval-long-jitter-filter")],
+        "recipe": [
+            "v6 continued 4 epochs (lr 3e-5) with STRATA's anti-aliased patch embedding: the same patch weights applied as a stride-1 convolution, a (1,4,6,4,1) low-pass, then every 4th pixel. No new parameters; <code>hook_embed</code> is unchanged.",
+            "Run with patch jitter and the seam filter, it holds a realistic climate for <b>10 years</b> (2000–2009) with E3SM's day-to-day variability at every level and its response to SSTs (see <a href=\"../index.html#decade\">Decade runs</a>).",
+            "Load: <code>pg.load(\"v7\")</code>; <code>pg.rollout</code> turns on jitter and the filter for runs over 10 days.",
+        ],
+        "changes": "anti-aliased patch embedding",
+    },
 ]
 
 
@@ -165,7 +210,7 @@ def faithful_days(v: dict, name: str) -> float | None:
 
 
 def _status(v: dict) -> str:
-    if (RUNS / v["checkpoint"]).exists():
+    if "/release/" in v["checkpoint"] and (RUNS / v["checkpoint"]).exists():
         return "released"
     if _eval(v, v["headline_eval"]):
         return "evaluated"
@@ -505,6 +550,52 @@ without blowing up, and the climate holds two to three times longer for the stoc
 every wavenumber, and rollouts up to 6 days, with and without the filter in the training loop (v5a, v5b).</p>"""
 
 
+def decade_section(out: Path) -> str:
+    """10-year free runs (scripts/long_run.py, 2000-2009) of the main configurations."""
+    runs = [("v4 + filter", "long-v4f"), ("v5a + jitter + filter", "long-v5a-jf"),
+            ("v5a + jitter + filter + small-scale damping", "long-v5a-jf-s50t90"),
+            ("v6 + jitter + filter", "long-v6-jit-f"), ("v7, no help", "long-v7"), ("v7 + jitter", "long-v7-jit"),
+            ("<b>v7 + jitter + filter</b>", "long-v7-jit-f"), ("v7 + jitter + filter (seed 1)", "long-v7-jit-f-seed1"),
+            ("v7 + jitter + filter (seed 2)", "long-v7-jit-f-seed2")]
+    rows, series = [], []
+    for label, tag in runs:
+        f = DRIFT / f"{tag}.npz"
+        if not f.exists():
+            continue
+        z = np.load(f)
+        n = list(z["names"]); d = z["g_e"] - z["g_t"]
+        t7, ps, u3, q7 = n.index("T_7"), n.index("PS"), n.index("U_3"), n.index("specific_total_water_7")
+        hold = next((i + 1 for i in range(len(d)) if abs(d[i, t7]) > 2 or abs(d[i, ps]) > 100 or abs(d[i, u3]) > 3), len(d))
+        last = d[-730:] if len(d) >= 730 else d
+        var = ""
+        if "dd_e" in z.files:
+            r = z["dd_e"] / z["dd_t"]
+            var = f"{min(r[n.index(v)] for v in ('T_0', 'T_3', 'T_7', 'U_3')):.2f}–{max(r[n.index(v)] for v in ('T_0', 'T_3', 'T_7', 'U_3')):.2f}"
+        rows.append([label, f"{hold / 365:.1f} y", f"{last[:, t7].mean():+.1f} K", f"{1e3 * last[:, q7].mean():+.2f} g/kg", var or "–"])
+        if tag in ("long-v4f", "long-v5a-jf", "long-v6-jit-f", "long-v7-jit-f"):
+            series.append((label.replace("<b>", "").replace("</b>", ""), np.arange(1, len(d) + 1) / 365, d[:, t7]))
+    if not rows:
+        return ""
+    fig, ax = plt.subplots(figsize=(9, 3.4), facecolor=SURF)
+    for i, (lab, t, y) in enumerate(series):
+        ax.plot(t, y, color=PALETTE[i % len(PALETTE)], lw=1.2, label=lab)
+    _style(ax, "global-mean near-surface temperature error (K), 10-year free runs")
+    ax.set_ylim(-15, 15); ax.axhline(0, color="#888", lw=0.8); ax.set_xlabel("years from 2000-01-01", color=INK2)
+    ax.legend(frameon=False, fontsize=8, labelcolor=INK)
+    fig.tight_layout(); fig.savefig(out / "decade.png", dpi=130); plt.close(fig)
+    return ("<h2 id='decade'>Decade runs</h2><p>Free runs over 2000–2009 (true forcings, prescribed ocean TS, the "
+            "checkpoint's correctors), state carried across years. <b>v7 with patch jitter and the seam filter holds a "
+            "realistic climate for the full decade</b>: yearly global biases within 0.1 K near the surface and 0.05 g/kg "
+            "of water, E3SM's day-to-day variability at every level, and Niño-3.4 anomalies that follow E3SM's "
+            "(r = 0.96 near-surface temperature, 0.94 water). Caveat: these years lie in the training range "
+            "(1980–2009); 2010 is the only held-out year.</p>"
+            + _img("decade.png", "10-year free runs: global near-surface temperature error")
+            + _table(["configuration", "climate holds*", "T_7 bias, last 2 y", "water bias, last 2 y",
+                      "day-to-day variability ÷ E3SM (T, U)"], rows)
+            + "<p class='muted'>Patch jitter: the patch grid shifts by a sub-patch offset every step (after NVlabs STRATA). "
+              "Seam filter: <code>vit_interp.filters.SeamFilter</code>. Both run outside the network.</p>")
+
+
 def analysis_sections(out: Path, release: dict) -> str:
     """Rossby and circuit results of the released model's exploration run."""
     explore = RUNS / release["run"] / "explore-final"
@@ -641,7 +732,7 @@ and what each design choice lets us dissect, with each hackathon tool attached w
 def build(out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     summ = [version_page(v, out) for v in VERSIONS]
-    evaluated = [(s["v"]["name"] + ": " + s["v"]["title"], s["eval"], PALETTE[i], "-")
+    evaluated = [(s["v"]["name"] + ": " + s["v"]["title"], s["eval"], PALETTE[i % len(PALETTE)], "-" if i < len(PALETTE) else (0, (4, 2)))
                  for i, s in enumerate(summ) if s["eval"]]
     has_cmp = fig_acc(evaluated, out / "versions_acc.png")
     released = [s for s in summ if s["status"] == "released"]
@@ -662,7 +753,7 @@ def build(out: Path) -> None:
                 f'<div class="muted">{"then drifts" if m.get("blowup") else "stable"}</div></div></div>')
     nbs = notebooks_html(out)
     nb_list = "".join(f'<li><a href="{h}">{s}</a>: {html.escape(NB_TITLES.get(s, ""))}</li>' for s, h in nbs)
-    body = f"""<nav class="muted"><a href="#architecture">Architecture</a><a href="training.html">Training</a><a href="#versions">Versions</a><a href="#stability">Stability</a><a href="#rossby">Rossby waves</a><a href="#circuits">Circuits</a><a href="#notebooks">Notebooks</a></nav>
+    body = f"""<nav class="muted"><a href="#architecture">Architecture</a><a href="training.html">Training</a><a href="#versions">Versions</a><a href="#stability">Stability</a><a href="#decade">Decade runs</a><a href="#rossby">Rossby waves</a><a href="#circuits">Circuits</a><a href="#notebooks">Notebooks</a></nav>
 <h1>Inside a ViT emulator of E3SM</h1>
 <p class="lede">A close-to-vanilla Vision Transformer that steps E3SMv3 (1°, AMIP) forward 6 hours, built to be taken apart for the
 interpretability hackathon: attention heads, circuits (Vi-CD) and physical laws (LAWFUL), with <a href="https://github.com/mahf708/exege">exege</a>. Checkpoints and latent archives are on Hugging Face:
@@ -683,6 +774,7 @@ level-7 water within 10%, surface pressure within 100 Pa, jet-level wind within 
 column is the older, laxer criterion (global near-surface temperature off by more than 30 K).</p>
 {_img("versions_acc.png", "anomaly correlation vs lead, all evaluated versions") if has_cmp else ""}
 {stability_section(out)}
+{decade_section(out)}
 {analysis_sections(out, analysed)}
 {rossby_versions(out)}
 <h2 id="notebooks">Hackathon notebooks (executed on {current["v"]["name"]})</h2><ul>{nb_list}</ul>

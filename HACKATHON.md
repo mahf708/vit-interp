@@ -102,7 +102,8 @@ listed at the top of `vit_interp/model.py` and drawn on the architecture schemat
 | **v2 (default)** | 1980–2009 data, 10 extra diagnostic outputs (precipitation, fluxes), ACE-style correctors in the loss, 3×3 output conv, EMA; one-step then 4- and 8-step rollouts | `pg.load()`, `--source v2`; [Hugging Face](https://huggingface.co/mahf708/vit-interp-e3sm) |
 | v1 | the first model: 2000–2009, MSE, rollout-tuned | `pg.load("v1")`, `--source v1` |
 | v3 | v2 made stochastic (noise-conditioned LayerNorms), trained with CRPS: the best 10-day skill and calibrated ensembles | `pg.load("v3")`, `--source v3` |
-| v4 | v3 trained on long random-length rollouts with last-step gradients: holds a realistic climate longest | `pg.load("v4")`, `--source v4` |
+| v4 | v3 trained on long random-length rollouts with last-step gradients | `pg.load("v4")`, `--source v4` |
+| **v7 (long runs)** | v4 + spectral energy score, patch-jitter training and STRATA's anti-aliased patch embedding: with jitter + the seam filter, a realistic climate for 10 years | `pg.load("v7")`; `pg.rollout` turns jitter + filter on past 10 days |
 
 v3 and v4 draw fresh noise on every `em.step` (see the README's *Stochastic models*): a natural
 experiment is how stable a circuit or head is across noise draws. Every number for every version (skill vs lead, free-run drift, days the climate holds) is on the results page.
@@ -110,10 +111,11 @@ experiment is how stable a circuit or head is across noise draws. Every number f
 ## Known so far (release v2; a starting point, please overturn)
 
 - **Skill on 2010:** 5-day anomaly correlation 0.92 (PS), 0.90 (T_7), 0.88 (U_3), 0.85 (V_3).
-- **Why long runs go unstable:** the network adds a little 4° patch-period noise every step; it grows ~30× a month
-  until a hot spot (Tibet for v4, the poles for v2) blows up and spreads. A seam filter outside the network
-  (`pg.rollout(..., smooth=True)`, the default past 10 days) fixes it: v4 holds a realistic climate ~300 days instead
-  of 144. *Which heads write the seam noise?* is a good circuits question. Few-day questions give the cleanest answers.
+- **Why long runs go unstable, and the fix:** the network adds a little 4° patch-period noise every step; it grows
+  ~30× a month until a hot spot (Tibet for v4, the poles for v2) blows up and spreads. Three things together fix it:
+  STRATA's anti-aliased patch embedding (v7), shifting the patch grid by a sub-patch offset every step (jitter), and a
+  seam filter outside the network. v7 with all three runs a realistic climate for 10 years. *Which heads write the
+  seam noise, and what does the anti-aliased embedding change inside the model?* are good circuits questions.
 - **Heads that look upstream:** L3H5 reads ~20° west of a midlatitude token on average; L1H0 and L6H4 also
   look west. Block-0 heads average the whole globe; later heads are sharply local. Head identities differ
   between checkpoints: recompute for the model you load.

@@ -32,7 +32,7 @@ things and showing results (maps, tables) over writing new infrastructure: almos
 
 ```python
 from vit_interp import playground as pg
-em, meta = pg.load()                 # "v1".."v4" / a path; downloads off LCRC
+em, meta = pg.load()                 # "v1".."v4", "v7" / a path; downloads off LCRC
 x = pg.state("2010-01-15T00")        # any 2010 time label prefix, or an index 0..1459
 cache = {}; em.step(x.to(next(em.parameters()).device), cache=cache, names={"blocks.5.hook_resid_post"})
 ```
@@ -65,6 +65,8 @@ cache = {}; em.step(x.to(next(em.parameters()).device), cache=cache, names={"blo
   Recompute (`pg.head_atlas`) for the model you load.
 - **Known model limits:** good to ~5 days (5-day ACC 0.85–0.92). Without help, free runs go unstable after 2–5 months:
   4° patch-period noise grows every step until a hot spot (Tibet for v4, the poles for v2) spreads. `pg.rollout` turns on
-  the seam filter (`vit_interp.filters.SeamFilter`, outside the network) for runs over 10 days, and applies the
-  checkpoint's conservation correctors; with it v4 holds a realistic climate ~300 days. Prefer few-day questions.
+  the seam filter (`vit_interp.filters.SeamFilter`) for runs over 10 days, plus patch jitter (`PatchJitter`) for models
+  trained with it (v7), and applies the checkpoint's correctors; v7 then holds a realistic climate for 10 years. Jitter
+  and the filter run outside the network, but with jitter on, hooks see a shifted grid: record hooks without it.
+  Prefer few-day questions for circuits.
 - Tests: `python -m pytest -q tests` (CPU, a few minutes).

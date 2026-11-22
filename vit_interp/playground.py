@@ -86,6 +86,7 @@ def load(ckpt: str | Path | None = None, device: str | None = None, data: str = 
     from .corrector import attach
 
     attach(em, ck, meta(data), correct)
+    em.trained_jitter = bool((ck.get("args") or {}).get("train_jitter"))
     print(f"loaded {path} (epoch {ck.get('epoch')}, step {ck.get('step')}) on {device}")
     return em, meta(data)
 
@@ -134,16 +135,21 @@ def step(em, x, hooks=None, cache=None, names=None):
 
 @torch.no_grad()
 def rollout(em, t: str | int = 0, steps: int = 20, year: int = 2010, correct: bool = True,
-            seed: int | None = None, smooth: bool | None = None):
+            seed: int | None = None, smooth: bool | None = None, jitter: bool | None = None):
     """(emulated, true) prognostic trajectories, each (steps + 1, 34, 180, 360), from E3SM's
     state at ``t`` with true forcings and prescribed ocean TS, applying the conservation
     correctors (as the published evaluations do; ``correct=False`` for the raw network).
     ``seed`` makes a stochastic model's (v3, v4) noise reproducible. ``smooth`` applies the seam
     filter (``vit_interp.filters``) at every step; the default turns it on for runs longer than
     10 days (40 steps), where patch-scale noise otherwise grows until the run destabilizes, and
-    off for shorter ones (it costs ~0.01-0.02 of 5-day anomaly correlation)."""
+    off for shorter ones (it costs ~0.01-0.02 of 5-day anomaly correlation). ``jitter`` shifts the
+    patch grid by a sub-patch offset each step (``vit_interp.filters.PatchJitter``); the default
+    turns it on with the filter for models trained with it (v6, v7): v7 with both runs a
+    realistic climate for a decade. On other models jitter alone makes runs worse."""
     if smooth is None:
         smooth = steps > 40
+    if jitter is None:
+        jitter = smooth and bool(getattr(em, "trained_jitter", False))
     dev = next(em.parameters()).device
     tr = truth(t, steps, year, device=dev)
     filt = None
@@ -151,7 +157,12 @@ def rollout(em, t: str | int = 0, steps: int = 20, year: int = 2010, correct: bo
         from .filters import SeamFilter
 
         filt = SeamFilter(meta()["lat"], tr.shape[-1]).to(dev)
-    states, _ = em.rollout(tr, steps, correct=correct, seed=seed, smooth=filt)
+    jit = None
+    if jitter:
+        from .filters import PatchJitter
+
+        jit = PatchJitter(em.cfg.patch, "cycle16")
+    states, _ = em.rollout(tr, steps, correct=correct, seed=seed, smooth=filt, jitter=jit)
     return states[0].cpu(), tr[0, :, :N_PROG].cpu()
 
 
