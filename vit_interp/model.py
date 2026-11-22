@@ -68,6 +68,12 @@ class ViTConfig:
     # weights applied as a stride-1 convolution, then this low-pass filter and stride-p decimation;
     # empty = the plain non-overlapping patch embedding. (1, 4, 6, 4, 1) is STRATA's default.
     embed_filter: tuple = ()
+    # architecture: "vit" (this file: one token per patch) or "vit3d" (model3d.py: one token per
+    # level and patch, ViViT-style factorized attention)
+    arch: str = "vit"
+    attn3d: str = "split"  # vit3d: split (ViViT model 4), factorized (model 3), alternate (STRATA)
+    heads_v: int = 2  # vit3d split: heads that attend vertically
+    pos3d: str = "abs"  # vit3d: abs (learned) or rope (rotary, periodic in longitude)
 
     @property
     def grid(self) -> tuple[int, int]:
@@ -313,6 +319,17 @@ class ViT(nn.Module):
         cache: dict[str, torch.Tensor] = {}
         out = self.forward(x, hooks=hooks, cache=cache, names=names, noise=noise, generator=generator)
         return out, cache
+
+
+def build_net(cfg: ViTConfig) -> nn.Module:
+    """The network a config describes (``arch``: "vit" or "vit3d")."""
+    if cfg.arch == "vit3d":
+        from .model3d import ViT3D
+
+        return ViT3D(cfg)
+    if cfg.arch != "vit":
+        raise ValueError(f"unknown arch {cfg.arch!r}")
+    return ViT(cfg)
 
 
 def token_latlon(lat, lon, patch: int):

@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 
 from .data import ALL_NAMES, N_ALL, N_PROG, PROG_NAMES, Stats
-from .model import ViT, ViTConfig
+from .model import ViT, ViTConfig, build_net
 
 TS = PROG_NAMES.index("TS")
 OCNFRAC = ALL_NAMES.index("OCNFRAC")
@@ -29,7 +29,7 @@ class Emulator(nn.Module):
     def __init__(self, cfg: ViTConfig, stats: Stats, lat: np.ndarray, corrector: nn.Module | None = None):
         super().__init__()
         self.cfg = cfg
-        self.net = ViT(cfg)
+        self.net = build_net(cfg)
         self.n_diag = cfg.out_chans - N_PROG
         self.register_buffer("mean", torch.tensor(stats.mean[:N_ALL])[None, :, None, None])
         self.register_buffer("std", torch.tensor(stats.std[:N_ALL])[None, :, None, None])

@@ -1,0 +1,12 @@
+#!/bin/bash
+#PBS -A E3SM
+#PBS -q gpu
+#PBS -N vit-bench
+#PBS -l select=1:ngpus=1
+#PBS -l walltime=00:30:00
+#PBS -j oe
+#PBS -o logs/
+cd "${PBS_O_WORKDIR:-$HOME/vit-interp}"
+.venv/bin/python scripts/bench3d.py 2
+.venv/bin/python scripts/bench3d.py 4
+.venv/bin/python scripts/bench3d.py 8 ckpt
