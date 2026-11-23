@@ -4,7 +4,7 @@
 #PBS -q gpu
 #PBS -N vit-long
 #PBS -l select=1:ngpus=1
-#PBS -l walltime=02:00:00
+#PBS -l walltime=04:00:00
 #PBS -j oe
 #PBS -o logs/
 set -euo pipefail
