@@ -89,6 +89,9 @@ def main():
     p.add_argument("--val-stride", type=int, default=7, help="subsample validation windows")
     p.add_argument("--rollout-steps", type=int, default=20)
     p.add_argument("--walltime-min", type=float, default=1e9)
+    p.add_argument("--select", choices=["best", "last"], default="best",
+                   help="what best.pt holds: the lowest one-step validation loss (best), or the latest "
+                        "validated weights (last; for rollout stages, where one-step loss favours early epochs)")
     p.add_argument("--init", default=None, help="weights to start from (fine-tuning)")
     p.add_argument("--compile", action="store_true")
     p.add_argument("--head-conv", type=int, default=0, help="k x k output convolution (0: none)")
@@ -402,20 +405,19 @@ def main():
             if (time.time() - t_start) / 60 > a.walltime_min:
                 stop = True
                 break
-        if stop:
-            save("latest.pt")
-            log("walltime budget reached; saved latest.pt")
-            if not (out / "best.pt").exists():  # a stage cut short before its first validation
-                save("best.pt")
-                log("no validated best.pt yet: saved these (unvalidated) weights as best.pt too")
-            break
-        epoch += 1
-        with _ema_weights():
+            if step >= (epoch + 1) * steps_per_epoch:  # a resumed, part-done epoch ends on schedule
+                break
+        if not stop:
+            epoch += 1
+        with _ema_weights():  # also at a walltime stop: the weights we have are validated and kept
             vloss, rmse1, rmser = validate()
-        if vloss < best:
-            best = vloss
+        if vloss < best or a.select == "last" or not (out / "best.pt").exists():
+            best = min(best, vloss)
             save("best.pt")
         save("latest.pt")
+        if stop:
+            log(f"walltime budget reached at step {step}: validated (loss {vloss:.4f}) and saved latest.pt"
+                + (" and best.pt" if a.select == "last" else ""))
         if rank == 0:
             rep = {n: float(rmse1[PROG_NAMES.index(n)]) for n in REPORT}
             r5 = {n: float(rmser[-1, PROG_NAMES.index(n)]) for n in REPORT}
