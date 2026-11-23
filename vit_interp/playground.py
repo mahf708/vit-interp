@@ -145,7 +145,7 @@ def rollout(em, t: str | int = 0, steps: int = 20, year: int = 2010, correct: bo
     off for shorter ones (it costs ~0.01-0.02 of 5-day anomaly correlation). ``jitter`` shifts the
     patch grid by a sub-patch offset each step (``vit_interp.filters.PatchJitter``); the default
     turns it on with the filter for models trained with it (v6, v7): v7 with both runs a
-    realistic climate for a decade. On other models jitter alone makes runs worse."""
+    realistic climate for 6.6-10 years (3 seeds). On other models jitter alone makes runs worse."""
     if smooth is None:
         smooth = steps > 40
     if jitter is None:

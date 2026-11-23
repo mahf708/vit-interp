@@ -66,7 +66,7 @@ cache = {}; em.step(x.to(next(em.parameters()).device), cache=cache, names={"blo
 - **Known model limits:** good to ~5 days (5-day ACC 0.85–0.92). Without help, free runs go unstable after 2–5 months:
   4° patch-period noise grows every step until a hot spot (Tibet for v4, the poles for v2) spreads. `pg.rollout` turns on
   the seam filter (`vit_interp.filters.SeamFilter`) for runs over 10 days, plus patch jitter (`PatchJitter`) for models
-  trained with it (v7), and applies the checkpoint's correctors; v7 then holds a realistic climate for 10 years. Jitter
+  trained with it (v7), and applies the checkpoint's correctors; v7 then holds a realistic climate for 6.6–10 years (3 seeds). Jitter
   and the filter run outside the network, but with jitter on, hooks see a shifted grid: record hooks without it.
   Prefer few-day questions for circuits.
 - Tests: `python -m pytest -q tests` (CPU, a few minutes).

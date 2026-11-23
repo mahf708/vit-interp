@@ -110,7 +110,7 @@ class Emulator(nn.Module):
         smooth: a ``vit_interp.filters.SeamFilter`` applied to every step's increment (after the
         correctors, before ocean TS is prescribed); recommended for runs longer than a few weeks.
         jitter: a ``vit_interp.filters.PatchJitter`` (per-step sub-patch grid shifts); with
-        ``smooth``, what keeps v7 stable for a decade. Hooks then see the shifted grid.
+        ``smooth``, what keeps v7's climate realistic for 6.6-10 years. Hooks then see the shifted grid.
         """
         gen = None
         if seed is not None and self.cfg.noise_dim:

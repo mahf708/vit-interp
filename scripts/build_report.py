@@ -155,7 +155,7 @@ VERSIONS = [
     },
     {
         "name": "v7",
-        "title": "+ anti-aliased patch embedding: a decade-stable climate",
+        "title": "+ anti-aliased patch embedding: a realistic climate for 7–10 years",
         "run": "vit7-p4-d384-l8",
         "checkpoint": "vit-p4-d384-l8/release/v7.pt",
         "headline_eval": "eval-long",
@@ -164,7 +164,7 @@ VERSIONS = [
                   ("+ jitter + seam filter (recommended for long runs)", "eval-long-jitter-filter")],
         "recipe": [
             "v6 continued 4 epochs (lr 3e-5) with STRATA's anti-aliased patch embedding: the same patch weights applied as a stride-1 convolution, a (1,4,6,4,1) low-pass, then every 4th pixel. No new parameters; <code>hook_embed</code> is unchanged.",
-            "Run with patch jitter and the seam filter, it holds a realistic climate for <b>10 years</b> (2000–2009) with E3SM's day-to-day variability at every level and its response to SSTs (see <a href=\"../index.html#decade\">Decade runs</a>).",
+            "Run with patch jitter and the seam filter, it holds a realistic climate for <b>6.6–10 years</b> (3 noise seeds over 2000–2009; one held all 10) with E3SM's variability and its response to SSTs, then settles about 11 K warm (see <a href=\"../index.html#decade\">Decade runs</a>).",
             "Load: <code>pg.load(\"v7\")</code>; <code>pg.rollout</code> turns on jitter and the filter for runs over 10 days.",
         ],
         "changes": "anti-aliased patch embedding",
@@ -555,7 +555,7 @@ def decade_section(out: Path) -> str:
     runs = [("v4 + filter", "long-v4f"), ("v5a + jitter + filter", "long-v5a-jf"),
             ("v5a + jitter + filter + small-scale damping", "long-v5a-jf-s50t90"),
             ("v6 + jitter + filter", "long-v6-jit-f"), ("v7, no help", "long-v7"), ("v7 + jitter", "long-v7-jit"),
-            ("<b>v7 + jitter + filter</b>", "long-v7-jit-f"), ("v7 + jitter + filter (seed 1)", "long-v7-jit-f-seed1"),
+            ("<b>v7 + jitter + filter (seed 0)</b>", "long-v7-jit-f"), ("v7 + jitter + filter (seed 1)", "long-v7-jit-f-seed1"),
             ("v7 + jitter + filter (seed 2)", "long-v7-jit-f-seed2")]
     rows, series = [], []
     for label, tag in runs:
@@ -572,7 +572,7 @@ def decade_section(out: Path) -> str:
             r = z["dd_e"] / z["dd_t"]
             var = f"{min(r[n.index(v)] for v in ('T_0', 'T_3', 'T_7', 'U_3')):.2f}–{max(r[n.index(v)] for v in ('T_0', 'T_3', 'T_7', 'U_3')):.2f}"
         rows.append([label, f"{hold / 365:.1f} y", f"{last[:, t7].mean():+.1f} K", f"{1e3 * last[:, q7].mean():+.2f} g/kg", var or "–"])
-        if tag in ("long-v4f", "long-v5a-jf", "long-v6-jit-f", "long-v7-jit-f"):
+        if tag in ("long-v4f", "long-v5a-jf", "long-v6-jit-f", "long-v7-jit-f", "long-v7-jit-f-seed1", "long-v7-jit-f-seed2"):
             series.append((label.replace("<b>", "").replace("</b>", ""), np.arange(1, len(d) + 1) / 365, d[:, t7]))
     if not rows:
         return ""
@@ -585,10 +585,11 @@ def decade_section(out: Path) -> str:
     fig.tight_layout(); fig.savefig(out / "decade.png", dpi=130); plt.close(fig)
     return ("<h2 id='decade'>Decade runs</h2><p>Free runs over 2000–2009 (true forcings, prescribed ocean TS, the "
             "checkpoint's correctors), state carried across years. <b>v7 with patch jitter and the seam filter holds a "
-            "realistic climate for the full decade</b>: yearly global biases within 0.1 K near the surface and 0.05 g/kg "
-            "of water, E3SM's day-to-day variability at every level, and Niño-3.4 anomalies that follow E3SM's "
-            "(r = 0.96 near-surface temperature, 0.94 water). Caveat: these years lie in the training range "
-            "(1980–2009); 2010 is the only held-out year.</p>"
+            "realistic climate for 6.6 to 10 years</b> across three noise seeds (one held the full decade): yearly global "
+            "biases within 0.1 K near the surface and 0.05 g/kg of water while realistic, E3SM's day-to-day variability at "
+            "every level, and Niño-3.4 anomalies that follow E3SM's (r = 0.91–0.96 near-surface temperature, 0.90–0.94 "
+            "water). The two shorter runs then settle into a steady state about 11 K warm (no blow-up). Caveat: these "
+            "years lie in the training range (1980–2009); 2010 is the only held-out year.</p>"
             + _img("decade.png", "10-year free runs: global near-surface temperature error")
             + _table(["configuration", "climate holds*", "T_7 bias, last 2 y", "water bias, last 2 y",
                       "day-to-day variability ÷ E3SM (T, U)"], rows)
