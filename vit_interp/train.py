@@ -89,6 +89,8 @@ def main():
     p.add_argument("--val-stride", type=int, default=7, help="subsample validation windows")
     p.add_argument("--rollout-steps", type=int, default=20)
     p.add_argument("--walltime-min", type=float, default=1e9)
+    p.add_argument("--save-every-min", type=float, default=0.0,
+                   help="also save latest.pt every this many minutes (preemptible queues); 0 = only at epoch ends")
     p.add_argument("--select", choices=["best", "last"], default="best",
                    help="what best.pt holds: the lowest one-step validation loss (best), or the latest "
                         "validated weights (last; for rollout stages, where one-step loss favours early epochs)")
@@ -197,7 +199,7 @@ def main():
         if ema is not None:
             ema = {k[len("net."):]: v.clone().float() for k, v in ck["state_dict"].items()
                    if k.startswith("net.")}
-        if "raw_net" in ck:
+        if ck.get("raw_net") is not None:
             em.net.load_state_dict(ck["raw_net"])
         opt.load_state_dict(ck["opt"])
         sched.load_state_dict(ck["sched"])
@@ -374,6 +376,7 @@ def main():
     em.train()
     t0, seen = time.time(), 0
     stop = False
+    t_saved = time.time()
     while epoch < a.epochs and not stop:
         if sampler is not None:
             sampler.set_epoch(epoch)
@@ -402,6 +405,9 @@ def main():
                 dt = (time.time() - t0) / seen
                 log(f"ep {epoch} step {step} loss {loss.item():.4f} gnorm {gn.item():.3f} "
                     f"lr {sched.get_last_lr()[0]:.2e} {dt:.3f}s/step")
+            if a.save_every_min and (time.time() - t_saved) / 60 > a.save_every_min:
+                save("latest.pt")
+                t_saved = time.time()
             if (time.time() - t_start) / 60 > a.walltime_min:
                 stop = True
                 break
