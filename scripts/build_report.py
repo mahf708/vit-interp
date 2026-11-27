@@ -22,6 +22,11 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("Agg")
+matplotlib.rcParams.update({  # one look for every figure on the site, legible at ~1000 px wide
+    "font.size": 11, "axes.titlesize": 12, "axes.labelsize": 11, "xtick.labelsize": 10,
+    "ytick.labelsize": 10, "legend.fontsize": 10, "figure.dpi": 110, "savefig.dpi": 130,
+    "savefig.bbox": "tight", "savefig.pad_inches": 0.15, "axes.titlepad": 8,
+})
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
@@ -33,7 +38,7 @@ DEFAULT_MODEL = "v2"  # what vit_interp.playground.load() returns, and what the 
 URL = "https://web.lcrc.anl.gov/public/e3sm/diagnostic_output/ac.ngmahfouz/vit-interp/"
 
 # reference categorical palette, fixed order; one hue per version, never reused
-PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"]
+PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#7a5af5", "#0fa3b1", "#8c564b", "#5a5a5a"]
 INK, INK2, GRID, SURF = "#0b0b0b", "#52514e", "#e4e3df", "#fcfcfb"
 LEADS = ["1d", "3d", "5d", "10d"]
 ACC_VARS = ["PS", "T_7", "U_3", "V_3"]
@@ -249,69 +254,212 @@ def _style(ax, title=None):
     for s in ("left", "bottom"):
         ax.spines[s].set_color(INK2)
         ax.spines[s].set_linewidth(0.8)
-    ax.tick_params(colors=INK2, labelsize=9)
+    ax.tick_params(colors=INK2, labelsize=10)
     ax.grid(True, color=GRID, linewidth=0.8)
     ax.set_axisbelow(True)
     if title:
-        ax.set_title(title, color=INK, fontsize=11, loc="left")
+        ax.set_title(title, color=INK, fontsize=12, loc="left")
 
 
 def fig_acc(series: list[tuple[str, dict, str, object]], path: Path) -> bool:
-    """series: (label, eval metrics, color, linestyle). Persistence from the first."""
+    """series: (label, eval metrics, color, linestyle). Persistence from the first. A 2 x 2 grid
+    and a legend underneath, wrapped, so no label is ever cut off or drawn over the axes."""
+    import textwrap
+
     if not series:
         return False
-    fig, axes = plt.subplots(1, 4, figsize=(13, 3.3), facecolor=SURF, sharey=True)
+    fig, axes = plt.subplots(2, 2, figsize=(11, 7.2), facecolor=SURF, sharey=True, sharex=True)
     x = [1, 3, 5, 10]
-    for ax, v in zip(axes, ACC_VARS, strict=True):
+    for ax, v in zip(axes.flat, ACC_VARS, strict=True):
         for label, m, c, ls in series:
             ax.plot(x, [m["skill"][v][k]["acc"] for k in LEADS], linestyle=ls, marker="o", color=c,
-                    lw=2, ms=5, label=label)
+                    lw=2, ms=5, label=textwrap.fill(label, 42))
         ax.plot(x, [series[0][1]["skill"][v][k]["acc_persistence"] for k in LEADS], "--", color=INK2,
                 lw=1.2, label="persistence")
         _style(ax, v)
         ax.set_xticks(x)
-        ax.set_xlabel("lead (days)", color=INK2, fontsize=9)
         ax.axhline(0.6, color=INK2, lw=0.6, ls=":")
-    axes[0].set_ylabel("anomaly correlation (2010)", color=INK2)
-    axes[0].set_ylim(-0.1, 1.02)
-    fig.legend(*axes[0].get_legend_handles_labels(), loc="lower center", ncol=min(4, len(series) + 1),
-               frameon=False, fontsize=9, labelcolor=INK)
-    fig.tight_layout(rect=(0, 0.12, 1, 1))
-    fig.savefig(path, dpi=150)
+        ax.set_ylim(-0.1, 1.02)
+    for ax in axes[1]:
+        ax.set_xlabel("lead (days)", color=INK2)
+    for ax in axes[:, 0]:
+        ax.set_ylabel("anomaly correlation (2010)", color=INK2)
+    n = len(series) + 1
+    ncol = n if n <= 5 and max(len(l) for l, *_ in series) < 14 else (3 if n > 4 else 2)
+    fig.tight_layout(rect=(0, 0.04 + 0.035 * ((n + ncol - 1) // ncol), 1, 1))
+    fig.legend(*axes[0, 0].get_legend_handles_labels(), loc="lower center", ncol=ncol,
+               frameon=False, labelcolor=INK, bbox_to_anchor=(0.5, 0.0))
+    fig.savefig(path)
     plt.close(fig)
     return True
 
 
 def fig_training(v: dict, path: Path) -> bool:
+    """Validation loss of the first stage, then each stage's multi-day U_3 error, three panels a row."""
+    import textwrap
+
     stages = [(label, _jsonl(RUNS / v["run"] / d / "metrics.jsonl")) for label, d in v["stages"]]
     stages = [(l, r) for l, r in stages if r]
     if not stages:
         return False
-    fig, axes = plt.subplots(1, 1 + len(stages), figsize=(4.2 * (1 + len(stages)), 3.2), facecolor=SURF)
-    one = stages[0][1]
-    ax = axes[0]
-    ax.plot([r["epoch"] for r in one], [r["val_loss"] for r in one], "-", color=PALETTE[0], lw=2)
-    _style(ax, f"{stages[0][0]}: validation loss")
-    ax.set_xlabel("epoch", color=INK2, fontsize=9)
-    for ax, (label, rows) in zip(axes[1:], stages, strict=True):
-        k = next((k for k in rows[0] if k.startswith("rmse_") and k != "rmse_1step"), None)
-        if k:
+    panels = [("loss", stages[0])] + [("rmse", st) for st in stages]
+    if len(stages) == 1 and len(stages[0][1]) == 1:
+        panels = panels[1:]
+    ncol = min(3, len(panels))
+    nrow = (len(panels) + ncol - 1) // ncol
+    fig, axes = plt.subplots(nrow, ncol, figsize=(3.9 * ncol, 3.3 * nrow), facecolor=SURF, squeeze=False)
+    for ax in axes.flat[len(panels):]:
+        ax.set_visible(False)
+    for ax, (kind, (label, rows)) in zip(axes.flat, panels):
+        ep = [r["step"] / max(1, round(min(r2["step"] / r2["epoch"] for r2 in rows if r2["epoch"] >= 1)
+                                    if any(r2["epoch"] >= 1 for r2 in rows) else r["step"])) for r in rows]
+        if kind == "loss":
+            ax.plot(ep, [r["val_loss"] for r in rows], "-", color=PALETTE[0], lw=2)
+            ax.set_ylabel("validation loss", color=INK2)
+        else:
+            k = next((k for k in rows[0] if k.startswith("rmse_") and k != "rmse_1step"), None)
+            if not k:
+                continue
             days = int(k.split("_")[1].replace("step", "")) / 4
-            ax.plot([r["epoch"] for r in rows], [r[k]["U_3"] for r in rows], "-o", color=PALETTE[0], lw=2, ms=3)
-            _style(ax, f"{label}: {days:g}-day U_3 RMSE (m/s)")
-        ax.set_xlabel("epoch", color=INK2, fontsize=9)
+            ax.plot(ep, [r[k]["U_3"] for r in rows], "-o", color=PALETTE[1], lw=2, ms=3)
+            ax.set_ylabel(f"{days:g}-day U_3 error (m/s)", color=INK2)
+        _style(ax, textwrap.fill(label, 34))
+        ax.set_xlabel("epoch", color=INK2)
+        from matplotlib.ticker import MaxNLocator
+
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
     fig.tight_layout()
-    fig.savefig(path, dpi=150)
+    fig.savefig(path)
     plt.close(fig)
     return True
+
+
+# -- evaluation figures, redrawn from each evaluation's fields.npz in the site's style ------------
+
+_PRETTY = {"PS": ("surface pressure", "hPa", 0.01), "TS": ("surface temperature", "K", 1),
+           "T_7": ("near-surface temperature, T_7", "K", 1), "T_3": ("mid-troposphere temperature, T_3", "K", 1),
+           "U_3": ("jet-level zonal wind, U_3", "m/s", 1), "V_3": ("jet-level meridional wind, V_3", "m/s", 1),
+           "U_7": ("near-surface zonal wind, U_7", "m/s", 1),
+           "specific_total_water_7": ("near-surface water, q_7", "g/kg", 1000)}
+
+
+def _pretty(v):
+    return _PRETTY.get(v, (v, "", 1))
+
+
+def fig_eval_maps(z, lat, lon, days: float, path: Path) -> None:
+    from vit_interp.evaluate import MAP_VARS
+
+    names = list(z["names"])
+    try:
+        import cartopy.crs as ccrs
+
+        proj, tr = ccrs.PlateCarree(central_longitude=180), ccrs.PlateCarree()
+    except Exception:
+        proj = tr = None
+    fig = plt.figure(figsize=(13, 2.55 * len(MAP_VARS)), facecolor=SURF, layout="constrained")
+    for r, v in enumerate(MAP_VARS):
+        label, unit, k = _pretty(v)
+        t, e = z["mean_t"][names.index(v)] * k, z["mean_e"][names.index(v)] * k
+        lo, hi = np.nanpercentile(t, [1, 99]); d = e - t; dm = float(np.nanpercentile(np.abs(d), 99)) or 1.0
+        for c, (f, kw, col) in enumerate([(t, dict(vmin=lo, vmax=hi, cmap="viridis"), "E3SM"),
+                                          (e, dict(vmin=lo, vmax=hi, cmap="viridis"), "emulator"),
+                                          (d, dict(vmin=-dm, vmax=dm, cmap="RdBu_r"), "emulator − E3SM")]):
+            ax = fig.add_subplot(len(MAP_VARS), 3, 3 * r + c + 1, projection=proj) if proj else \
+                fig.add_subplot(len(MAP_VARS), 3, 3 * r + c + 1)
+            im = ax.pcolormesh(lon, lat, f, shading="auto", rasterized=True, **({"transform": tr} if tr else {}), **kw)
+            if tr:
+                try:
+                    ax.coastlines(lw=0.35)
+                except Exception:
+                    pass
+            if r == 0:
+                ax.set_title(col, color=INK, fontsize=13, fontweight="bold")
+            if c == 0:
+                ax.text(-0.04, 0.5, label, transform=ax.transAxes, rotation=90, va="center", ha="right", color=INK, fontsize=11)
+            cb = fig.colorbar(im, ax=ax, shrink=0.85, pad=0.02, aspect=14)
+            cb.ax.tick_params(labelsize=9, colors=INK2)
+            cb.set_label(unit, color=INK2, fontsize=9)
+    fig.suptitle(f"Time mean over {days:.0f} days of 2010: free-running emulator vs E3SM", color=INK, fontsize=14)
+    fig.savefig(path); plt.close(fig)
+
+
+def fig_eval_zonal(z, lat, path: Path) -> None:
+    from vit_interp.data import PROG_NAMES
+
+    P = PROG_NAMES.index
+    seen = np.abs(z["zm_t"]).sum((1, 2)) > 0
+    fig, axes = plt.subplots(2, 3, figsize=(13, 7), facecolor=SURF, layout="constrained")
+    for r, (var, unit) in enumerate([("U", "m/s"), ("T", "K")]):
+        ch = [P(f"{var}_{lv}") for lv in range(8)]
+        t, e = z["zm_t"][seen][:, ch].mean(0), z["zm_e"][seen][:, ch].mean(0)
+        lo, hi = np.percentile(t, [1, 99]); d = e - t; dm = float(np.abs(d).max()) or 1.0
+        for c, (f, kw, col) in enumerate([(t, dict(vmin=lo, vmax=hi, cmap="viridis"), "E3SM"),
+                                          (e, dict(vmin=lo, vmax=hi, cmap="viridis"), "emulator"),
+                                          (d, dict(vmin=-dm, vmax=dm, cmap="RdBu_r"), "emulator − E3SM")]):
+            ax = axes[r, c]
+            im = ax.imshow(f, aspect="auto", extent=[lat[0], lat[-1], 7.5, -0.5], interpolation="nearest", **kw)
+            ax.set_title(f"zonal-mean {'wind U' if var == 'U' else 'temperature T'}: {col}", color=INK, loc="left")
+            ax.set_xlabel("latitude", color=INK2)
+            if c == 0:
+                ax.set_ylabel("model level (0 = top)", color=INK2)
+            ax.tick_params(colors=INK2)
+            cb = fig.colorbar(im, ax=ax, pad=0.02); cb.set_label(unit, color=INK2)
+    fig.savefig(path); plt.close(fig)
+
+
+def fig_eval_series(z, path: Path) -> None:
+    from vit_interp.evaluate import SERIES_VARS
+
+    names = list(z["names"])
+    n = len(z["ser_e"]); ok = ~np.isnan(z["ser_e"][:, 0])
+    tday = (np.arange(n) + 1) / 4
+    fig, axes = plt.subplots(2, 2, figsize=(11, 6.4), facecolor=SURF, sharex=True)
+    for ax, v in zip(axes.flat, SERIES_VARS):
+        label, unit, k = _pretty(v)
+        ax.plot(tday[ok], z["ser_t"][ok, names.index(v)] * k, color=INK2, lw=1.2, label="E3SM")
+        ax.plot(tday[ok], z["ser_e"][ok, names.index(v)] * k, color=PALETTE[1], lw=1.2, label="emulator")
+        _style(ax, f"global mean {label} ({unit})")
+    for ax in axes[1]:
+        ax.set_xlabel("day of 2010", color=INK2)
+    fig.tight_layout(rect=(0, 0.05, 1, 1))
+    fig.legend(*axes[0, 0].get_legend_handles_labels(), loc="lower center", ncol=2, frameon=False, labelcolor=INK)
+    fig.savefig(path); plt.close(fig)
+
+
+def eval_figures(ev: Path, d: Path) -> dict[str, str]:
+    """Redraw an evaluation's maps, zonal means and series into d; snapshots are copied (not saved
+    as data). Returns {figure name: file name} of what exists."""
+    figs = {}
+    f = ev / "fields.npz"
+    meta = json.loads((ROOT / "data-v2" / "meta.json").read_text())
+    lat, lon = np.asarray(meta["lat"]), np.asarray(meta["lon"])
+    if f.exists():
+        z = np.load(f)
+        days = float((~np.isnan(z["ser_e"][:, 0])).sum()) / 4
+        for name, fn in (("maps_time_mean", lambda p: fig_eval_maps(z, lat, lon, days, p)),
+                         ("zonal_mean_U_T", lambda p: fig_eval_zonal(z, lat, p)),
+                         ("global_mean_series", lambda p: fig_eval_series(z, p))):
+            try:
+                fn(d / f"{name}.png"); figs[name] = f"{name}.png"
+            except Exception as exc:  # fall back to the evaluation's own figure
+                print(f"  {ev.name}/{name}: redraw failed ({exc}); copying")
+    for name in ("snapshots", "maps_time_mean", "zonal_mean_U_T", "global_mean_series"):
+        if name not in figs and (ev / f"{name}.png").exists():
+            shutil.copy(ev / f"{name}.png", d / f"{name}.png"); figs[name] = f"{name}.png"
+    return figs
 
 
 def fig_rossby(explore: Path, path: Path) -> list[dict]:
     phis = [p for p in (30, 45, 60, -45) if (explore / f"rossby_phi{p}.json").exists()]
     if not phis:
         return []
-    fig, axes = plt.subplots(1, len(phis), figsize=(3.3 * len(phis), 3.2), facecolor=SURF)
-    axes = np.atleast_1d(axes)
+    ncol = 2 if len(phis) > 2 else len(phis)
+    nrow = (len(phis) + ncol - 1) // ncol
+    fig, axes = plt.subplots(nrow, ncol, figsize=(5.4 * ncol, 3.6 * nrow), facecolor=SURF, squeeze=False)
+    for ax in axes.flat[len(phis):]:
+        ax.set_visible(False)
+    axes = axes.flat
     out = []
     for ax, phi in zip(axes, phis, strict=True):
         m = json.loads((explore / f"rossby_phi{phi}.json").read_text())["measure"]
@@ -323,14 +471,14 @@ def fig_rossby(explore: Path, path: Path) -> list[dict]:
         lat = f"{abs(phi)}°{'N' if phi > 0 else 'S'}"
         _style(ax, lat)
         ax.set_xticks([2, 4, 6, 8, 10, 12, 14])
-        ax.set_xlabel("zonal wavenumber s", color=INK2, fontsize=9)
+        ax.set_xlabel("zonal wavenumber s", color=INK2)
+        ax.set_ylabel("ω − kŪ (rad/day)", color=INK2)
         dop = explore / f"rossby_doppler_phi{phi}.json"
         out.append({"lat": lat, "corr": float(np.corrcoef(f, g)[0, 1]), "ratio": float(np.polyfit(g, f, 1)[0]),
                     "M": m["M"], "M_doppler": json.loads(dop.read_text())["measure"]["M"] if dop.exists() else None})
-    axes[0].set_ylabel("intrinsic frequency ω − kŪ (rad/day)", color=INK2, fontsize=9)
-    axes[0].legend(frameon=False, fontsize=9, labelcolor=INK)
-    fig.tight_layout()
-    fig.savefig(path, dpi=150)
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    fig.legend(*axes[0].get_legend_handles_labels(), loc="upper center", ncol=2, frameon=False, labelcolor=INK)
+    fig.savefig(path)
     plt.close(fig)
     return out
 
@@ -347,7 +495,9 @@ main{max-width:1100px;margin:0 auto;padding:24px 16px 64px}h1{font-size:1.9rem;m
 h3{margin-top:1.6em}p.lede{color:var(--fg2);font-size:1.08rem}code{font-size:.9em;background:var(--line);padding:0 .3em;border-radius:4px}
 .tw{overflow-x:auto}table{border-collapse:collapse;margin:.6em 0;font-size:.92rem}th,td{border-bottom:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}
 th{color:var(--fg2);font-weight:600}img.fig{max-width:100%;height:auto;border:1px solid var(--line);border-radius:6px;margin:.4em 0}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+.split2{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:16px;align-items:center}
+@media (max-width:700px){.split2{grid-template-columns:1fr}}.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
 .kpi{font-size:1.7rem;font-weight:650}.muted{color:var(--fg2);font-size:.9rem}a{color:var(--acc)}nav a{margin-right:14px}
 .tag{display:inline-block;font-size:.78rem;padding:1px 8px;border-radius:10px;border:1px solid var(--line);color:var(--fg2)}
 .tag.released{border-color:#1baf7a}.tag.training{border-color:#eda100}
@@ -412,12 +562,7 @@ def version_page(v: dict, out: Path) -> dict:
         if fig_acc([(l, m, PALETTE[i], styles[i]) for i, (l, m, _) in enumerate(evals)], d / "skill_acc.png"):
             body.append(_img("skill_acc.png", "anomaly correlation vs lead"))
         last = evals[-1][2]
-        figs = {}
-        for name in ("snapshots", "maps_time_mean", "zonal_mean_U_T", "global_mean_series"):
-            src = RUNS / v["run"] / last / f"{name}.png"
-            if src.exists():
-                shutil.copy(src, d / f"{name}.png")
-                figs[name] = f"{name}.png"
+        figs = eval_figures(RUNS / v["run"] / last, d)
         if len(evals) > 1:  # before/after snapshots across the version's own history
             first = RUNS / v["run"] / evals[0][2] / "snapshots.png"
             if first.exists():
@@ -502,7 +647,9 @@ def fig_stability(path: Path) -> bool:
     if not all((DRIFT / f"{n}.npz").exists() for n in need):
         return False
     z = {n: np.load(DRIFT / f"{n}.npz") for n in need}
-    fig, ax = plt.subplots(1, 3, figsize=(15, 3.9), gridspec_kw={"width_ratios": [1, 1, 1.25]})
+    fig = plt.figure(figsize=(11, 9.0), facecolor=SURF, layout="constrained")
+    gs = fig.add_gridspec(2, 2, height_ratios=[1, 1.15])
+    ax = [fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1])]
     runs = [("probe-v2-all4", "v2", PALETTE[1], "-"), ("probe-v4-all4", "v4", PALETTE[0], "-"),
             ("probe-v4-f60s1-365", "v4 + seam filter (3 seeds)", PALETTE[2], "-"),
             ("probe-v4-f60s1-seed1", None, PALETTE[2], "-"), ("probe-v4-f60s1-seed2", None, PALETTE[2], "-")]
@@ -514,18 +661,31 @@ def fig_stability(path: Path) -> bool:
         ax[0].semilogy(d, r, color=c, ls=ls, lw=1.6, label=lab)
         g = q["g_err"][:, list(q["names"]).index("T_3")]
         ax[1].plot(np.arange(1, len(g) + 1), g, color=c, ls=ls, lw=1.6, label=lab)
-    _style(ax[0], "4° patch-period power in T_3, emulator ÷ E3SM")
-    ax[0].set_xlabel("day of free run"); ax[0].axhline(1, color="#888", lw=0.8); ax[0].legend(frameon=False, fontsize=8)
+    _style(ax[0], "patch-scale (4°) power in T_3, ÷ E3SM")
+    ax[0].set_xlabel("day of free run", color=INK2); ax[0].axhline(1, color="#888", lw=0.8)
+    ax[0].legend(frameon=False, labelcolor=INK, loc="upper left")
     _style(ax[1], "global-mean T_3 error (K)")
-    ax[1].set_xlabel("day of free run"); ax[1].axhline(0, color="#888", lw=0.8); ax[1].set_ylim(-5, 30)
+    ax[1].set_xlabel("day of free run", color=INK2); ax[1].axhline(0, color="#888", lw=0.8); ax[1].set_ylim(-5, 30)
     q = z["probe-v4-all4"]; mn = list(q["map_names"])
     e = q["maps"][124, mn.index("T_3")].astype(np.float32)
-    im = ax[2].pcolormesh(q["lon"], q["lat"], e, cmap="RdBu_r", vmin=-30, vmax=30, shading="auto")
-    ax[2].contour(q["lon"], q["lat"], np.abs(e) > 20, levels=[0.5], colors="k", linewidths=0.6)
-    _style(ax[2], "v4, day 125: T_3 error (K); the runaway starts at 26°N, 85°E")
-    ax[2].set_xlabel("longitude"); ax[2].set_ylabel("latitude")
-    fig.colorbar(im, ax=ax[2], shrink=0.85)
-    fig.tight_layout(); fig.savefig(path, dpi=110); plt.close(fig)
+    try:
+        import cartopy.crs as ccrs
+
+        m = fig.add_subplot(gs[1, :], projection=ccrs.PlateCarree(central_longitude=180))
+        im = m.pcolormesh(q["lon"], q["lat"], e, cmap="RdBu_r", vmin=-30, vmax=30, shading="auto",
+                          transform=ccrs.PlateCarree(), rasterized=True)
+        m.contour(q["lon"], q["lat"], np.abs(e) > 20, levels=[0.5], colors="k", linewidths=0.7, transform=ccrs.PlateCarree())
+        try:
+            m.coastlines(lw=0.4)
+        except Exception:
+            pass
+    except Exception:
+        m = fig.add_subplot(gs[1, :])
+        im = m.pcolormesh(q["lon"], q["lat"], e, cmap="RdBu_r", vmin=-30, vmax=30, shading="auto")
+    m.set_title("v4 after 125 days: T_3 error (K); the runaway starts at 26°N, 85°E (black: |error| > 20 K)",
+                color=INK, fontsize=12, loc="left")
+    fig.colorbar(im, ax=m, shrink=0.8, pad=0.02, label="K")
+    fig.savefig(path); plt.close(fig)
     return True
 
 
@@ -561,8 +721,9 @@ without blowing up, and the climate holds two to three times longer for the stoc
 <div class="tw">{_table(["model", "climate holds*", "free run (2010)", "5-day ACC PS / T_7 / U_3 / V_3", "10-day ACC"], rows)}</div>
 <p>Use it with <code>pg.rollout(em, t, steps, smooth=True)</code> (the default for runs longer than 10 days),
 <code>em.rollout(..., smooth=SeamFilter(lat, 360))</code> or <code>python -m vit_interp.evaluate ... --filter 60 --shapiro 1</code>.
-<b>The fix in training</b> (running): v4 continued with ACE's spectral energy score, which charges the loss for wrong power at
-every wavenumber, and rollouts up to 6 days, with and without the filter in the training loop (v5a, v5b).</p>"""
+<b>The fix in the model:</b> the spectral energy score (v5), training with patch jitter (v6) and NVIDIA STRATA's
+anti-aliased patch embedding (v7), run with jitter and the seam filter, give a realistic climate for 6.6–10 years
+(<a href="#decade">Decade runs</a>); the 3D model v8 is the best forecaster yet (<a href="#threed">3D model</a>).</p>"""
 
 
 def decade_section(out: Path) -> str:
@@ -593,13 +754,13 @@ def decade_section(out: Path) -> str:
             series.append((label.replace("<b>", "").replace("</b>", ""), np.arange(1, len(d) + 1) / 365, d[:, t7]))
     if not rows:
         return ""
-    fig, ax = plt.subplots(figsize=(9, 3.4), facecolor=SURF)
+    fig, ax = plt.subplots(figsize=(11, 4.2), facecolor=SURF)
     for i, (lab, t, y) in enumerate(series):
-        ax.plot(t, y, color=PALETTE[i % len(PALETTE)], lw=1.2, label=lab)
+        ax.plot(t, y, color=PALETTE[i % len(PALETTE)], lw=1.3, label=lab)
     _style(ax, "global-mean near-surface temperature error (K), 10-year free runs")
     ax.set_ylim(-15, 15); ax.axhline(0, color="#888", lw=0.8); ax.set_xlabel("years from 2000-01-01", color=INK2)
-    ax.legend(frameon=False, fontsize=8, labelcolor=INK)
-    fig.tight_layout(); fig.savefig(out / "decade.png", dpi=130); plt.close(fig)
+    ax.legend(frameon=False, labelcolor=INK, loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0)
+    fig.savefig(out / "decade.png"); plt.close(fig)
     return ("<h2 id='decade'>Decade runs</h2><p>Free runs over 2000–2009 (true forcings, prescribed ocean TS, the "
             "checkpoint's correctors), state carried across years. <b>v7 with patch jitter and the seam filter holds a "
             "realistic climate for 6.6 to 10 years</b> across three noise seeds (one held the full decade): yearly global "
@@ -634,14 +795,14 @@ def threed_section(out: Path) -> str:
         curves.append((label.replace("<b>", "").replace("</b>", ""), [d["epoch"] for d in m], [d["val_loss"] for d in m]))
     if not rows:
         return ""
-    fig, ax = plt.subplots(figsize=(7.5, 3.6), facecolor=SURF)
+    fig, ax = plt.subplots(figsize=(8, 4.2), facecolor=SURF)
     for i, (lab, e, v) in enumerate(curves):
         ax.plot(e, v, color=PALETTE[i % len(PALETTE)], ls="-" if i < len(PALETTE) else (0, (4, 2)), lw=1.6, label=lab)
     ax.set_ylim(0.05, 0.13)
     _style(ax, "one-step validation loss (2010), same recipe for every architecture")
     ax.set_xlabel("epoch", color=INK2)
-    ax.legend(frameon=False, fontsize=7.5, labelcolor=INK)
-    fig.tight_layout(); fig.savefig(out / "screen3d.png", dpi=130); plt.close(fig)
+    ax.legend(frameon=False, labelcolor=INK, loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0)
+    fig.savefig(out / "screen3d.png"); plt.close(fig)
     ft = _jsonl(RUNS / "f3d-rope" / "long" / "metrics.jsonl")
     v7 = _jsonl(RUNS / "vit7-p4-d384-l8" / "long" / "metrics.jsonl")
     ft_html = ""
@@ -697,8 +858,8 @@ def analysis_sections(out: Path, release: dict) -> str:
         u3, u5 = explore / "rossby_corr_phi45_U_3.json", explore / "rossby_corr_phi45_U_5.json"
         if u3.exists() and u5.exists():
             c3, c5 = (json.loads(p.read_text())["measure"]["M"] for p in (u3, u5))
-            steer = (f" At 45°N the shape correlation rises from {c3:.2f} to {c5:.2f} when the flow the law "
-                     "Doppler-shifts by is taken lower (U_5 instead of U_3).")
+            steer = (f" At 45°N the shape correlation {'rises' if c5 > c3 else 'falls'} from {c3:.2f} to {c5:.2f} when "
+                     "the flow the law Doppler-shifts by is taken lower (U_5 instead of U_3).")
         rows = [[r["lat"], f"{r['corr']:+.2f}", f"{r['ratio']:.1f}×", f"{r['M']:.0f}",
                  _fmt(r["M_doppler"])] for r in ross]
         parts.append(
@@ -769,16 +930,16 @@ def rossby_versions(out: Path) -> str:
     shutil.rmtree(tmp, ignore_errors=True)
     if len(rows) < 2:
         return ""
-    fig, ax = plt.subplots(figsize=(6.4, 3.6), facecolor=SURF)
+    fig, ax = plt.subplots(figsize=(8, 4.2), facecolor=SURF)
     for name, s_, f, g, c in fig_series:
         ax.plot(s_, f, "-o", color=c, lw=1.8, ms=3.5, label=name)
     if fig_series:
         ax.plot(fig_series[0][1], fig_series[0][3], "k--", lw=1.5, label="barotropic theory")
     _style(ax, "45°N: intrinsic frequency of a planted wave, every version")
-    ax.set_xlabel("zonal wavenumber s", color=INK2, fontsize=9)
-    ax.set_ylabel("ω − kŪ (rad/day)", color=INK2, fontsize=9)
-    ax.legend(frameon=False, fontsize=8, labelcolor=INK)
-    fig.tight_layout(); fig.savefig(out / "rossby_versions.png", dpi=150); plt.close(fig)
+    ax.set_xlabel("zonal wavenumber s", color=INK2)
+    ax.set_ylabel("ω − kŪ (rad/day)", color=INK2)
+    ax.legend(frameon=False, labelcolor=INK, loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0)
+    fig.savefig(out / "rossby_versions.png"); plt.close(fig)
     return ("<h3 id='rossby-versions'>Rossby waves across versions</h3>"
             "<p>The same probe (8 states of 2010, wavenumbers 2–14, levels 2–4) on every version that has been explored. "
             "Each cell: correlation of the model's dispersion with barotropic theory across wavenumbers / fitted magnitude "
@@ -801,7 +962,7 @@ def architecture_section(out: Path) -> str:
 <figure style="margin:0 0 12px"><a href="architecture.html"><img class="fig" src="arch/schematic.svg" alt="architecture schematic: patches, embedding, 8 pre-LayerNorm transformer blocks, decoder; and the inside of one block"></a>
 <figcaption class="muted">The architecture: one 6-hour step with tensor shapes (top), and the inside of each of the 8 blocks with the hook points
 the tools use (bottom).</figcaption></figure>
-<div class="card" style="display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:16px;align-items:center">
+<div class="card split2">
 <div><p style="margin-top:0">A deliberately plain Vision Transformer. The state is cut into <b>4°×4° patches</b> (4050 tokens); a
 <b>learned position embedding</b> is its only sense of place; <b>8 pre-LayerNorm blocks</b> of 6 global attention heads and an MLP
 write into one <b>residual stream</b>; a linear decoder turns it back into the 6-hour <b>tendency</b>. Carrying the state forward and the
@@ -820,7 +981,7 @@ and what each design choice lets us dissect, with each hackathon tool attached w
 def build(out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     summ = [version_page(v, out) for v in VERSIONS]
-    evaluated = [(s["v"]["name"] + ": " + s["v"]["title"], s["eval"], PALETTE[i % len(PALETTE)], "-" if i < len(PALETTE) else (0, (4, 2)))
+    evaluated = [(s["v"]["name"], s["eval"], PALETTE[i % len(PALETTE)], "-" if i < len(PALETTE) else (0, (4, 2)))
                  for i, s in enumerate(summ) if s["eval"]]
     has_cmp = fig_acc(evaluated, out / "versions_acc.png")
     released = [s for s in summ if s["status"] == "released"]
