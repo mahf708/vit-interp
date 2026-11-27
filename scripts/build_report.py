@@ -169,6 +169,21 @@ VERSIONS = [
         ],
         "changes": "anti-aliased patch embedding",
     },
+    {
+        "name": "v8",
+        "title": "3D (ViViT-style): one token per level, split horizontal/vertical heads",
+        "run": "f3d-rope",
+        "checkpoint": "f3d-rope/long/best.pt",
+        "headline_eval": "eval-long-jitter-filter",
+        "stages": [("4–24-step rollouts, v7's recipe, 8 epochs", "long")],
+        "evals": [("v8 + jitter + seam filter", "eval-long-jitter-filter")],
+        "recipe": [
+            "A new architecture (<code>vit_interp/model3d.py</code>): each of the 8 levels (T, U, V, water) and a surface level (PS, TS, forcings) is its own token, 9 × 4050 tokens; in every block 4 heads attend across their level and 2 up and down their column (ViViT's factorized dot-product attention); rotary horizontal positions, periodic in longitude; anti-aliased patch embedding; 14.4 M parameters.",
+            "Trained from scratch: 20 one-step epochs (the winner of a 7-way architecture screen, see <a href=\"../index.html#threed\">3D model</a>), then 8 epochs of v7's rollout recipe on Swing's backfill queue.",
+            "The best forecaster of any version (5-day ACC 0.93 / 0.90 / 0.88 / 0.85, 10-day 0.63 / 0.59 / 0.56 / 0.45); its 10-year run stays realistic all decade with a slow drift in the last two years. Not yet released: multi-seed decade check, and the interpretability tools learning 3D tokens, first.",
+        ],
+        "changes": "3D tokens with vertical attention heads; trained from scratch",
+    },
 ]
 
 
