@@ -733,7 +733,9 @@ def decade_section(out: Path) -> str:
             ("v6 + jitter + filter", "long-v6-jit-f"), ("v7, no help", "long-v7"), ("v7 + jitter", "long-v7-jit"),
             ("<b>v7 + jitter + filter (seed 0)</b>", "long-v7-jit-f"), ("v7 + jitter + filter (seed 1)", "long-v7-jit-f-seed1"),
             ("v7 + jitter + filter (seed 2)", "long-v7-jit-f-seed2"),
-            ("<b>3D (split heads, rotary) + jitter + filter</b>", "long-f3d-rope-jit-f")]
+            ("<b>v8 (3D) + jitter + filter (seed 0)</b>", "long-f3d-rope-jit-f"),
+            ("v8 (3D) + jitter + filter (seed 1)", "long-f3d-rope-jit-f-seed1"),
+            ("v8 (3D) + jitter + filter (seed 2)", "long-f3d-rope-jit-f-seed2")]
     rows, series = [], []
     for label, tag in runs:
         f = DRIFT / f"{tag}.npz"
@@ -824,8 +826,9 @@ def threed_section(out: Path) -> str:
                       f"{accs(ev, '5d')} against v7's {accs(v7e, '5d')}, 10-day {accs(ev, '10d')} against "
                       f"{accs(v7e, '10d')} (PS / T_7 / U_3 / V_3), the best of any version</b>; the 2010 free run "
                       f"holds its climate for {faithful_days({'run': 'f3d-rope'}, 'eval-long-jitter-filter'):.0f} days. "
-                      "Its 10-year run (one seed) stays realistic all decade, with a slow drift in the last two years "
-                      "(see <a href='#decade'>Decade runs</a>).")
+                      "All three 10-year runs (3 noise seeds) stay realistic the whole decade, against one of three for "
+                      "v7, with a slow, shared drift in the last two years (model top warming 2.5–2.8 K, mid-troposphere "
+                      "cooling about 2 K; see <a href='#decade'>Decade runs</a>).")
         ft_html = ("<h3>The winner through v7's rollout recipe</h3><p>The 3D split-head model with rotary "
                    "positions, fine-tuned for 8 epochs with v7's recipe (noise-conditioned norms, CRPS + spectral energy "
                    "score, 4–24-step rollouts with patch jitter, anti-aliased embedding), on Swing's backfill queue in "
