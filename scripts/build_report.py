@@ -597,6 +597,69 @@ def decade_section(out: Path) -> str:
               "Seam filter: <code>vit_interp.filters.SeamFilter</code>. Both run outside the network.</p>")
 
 
+def threed_section(out: Path) -> str:
+    """The 3D (ViViT-style) line: the architecture screen and the rollout fine-tune in progress."""
+    screen = [("2D baseline (16.7 M)", "s2d-d384"), ("3D split heads, 256 (7.5 M)", "s3d-split-d256"),
+              ("3D split heads, 256, rotary", "s3d-split-d256-rope"), ("3D factorized, 256 (10 M)", "s3d-fact-d256"),
+              ("3D alternating, 256 (7.8 M)", "s3d-alt-d256"), ("3D split heads, 384 (16.4 M)", "s3d-split-d384"),
+              ("<b>3D split heads, 384, rotary (14.4 M)</b>", "s3d-split-d384-rope")]
+    rows, curves = [], []
+    for label, r in screen:
+        m = _jsonl(RUNS / r / "stage1" / "metrics.jsonl")
+        if not m:
+            continue
+        by = {d["epoch"]: d for d in m}
+        last = m[-1]
+        k = next(x for x in last if x.startswith("rmse_") and x != "rmse_1step")
+        cell = lambda e: f"{by[e]['val_loss']:.4f}" if e in by else "–"  # noqa: E731
+        rows.append([label, cell(5), cell(10), cell(20), f"{last['rmse_1step']['U_3']:.2f} / {last['rmse_1step']['T_7']:.2f}",
+                     f"{last[k]['U_3']:.2f} / {last[k]['T_7']:.2f}"])
+        curves.append((label.replace("<b>", "").replace("</b>", ""), [d["epoch"] for d in m], [d["val_loss"] for d in m]))
+    if not rows:
+        return ""
+    fig, ax = plt.subplots(figsize=(7.5, 3.6), facecolor=SURF)
+    for i, (lab, e, v) in enumerate(curves):
+        ax.plot(e, v, color=PALETTE[i % len(PALETTE)], ls="-" if i < len(PALETTE) else (0, (4, 2)), lw=1.6, label=lab)
+    ax.set_ylim(0.05, 0.13)
+    _style(ax, "one-step validation loss (2010), same recipe for every architecture")
+    ax.set_xlabel("epoch", color=INK2)
+    ax.legend(frameon=False, fontsize=7.5, labelcolor=INK)
+    fig.tight_layout(); fig.savefig(out / "screen3d.png", dpi=130); plt.close(fig)
+    ft = _jsonl(RUNS / "f3d-rope" / "long" / "metrics.jsonl")
+    v7 = _jsonl(RUNS / "vit7-p4-d384-l8" / "long" / "metrics.jsonl")
+    ft_html = ""
+    if ft and v7:
+        f = lambda d: [f"{d['crps']:.4f}", f"{d['spread_skill']:.2f}", f"{d['rmse_1step']['U_3']:.2f} / {d['rmse_1step']['T_7']:.3f}",  # noqa: E731
+                       f"{d['rmse_40step']['U_3']:.2f} / {d['rmse_40step']['T_7']:.2f} / {d['rmse_40step']['PS']:.0f}"]
+        per = min(d["step"] / d["epoch"] for d in ft if d["epoch"] >= 1) if any(d["epoch"] >= 1 for d in ft) else 1
+        seen = {}
+        for d in ft:  # one row per tenth of an epoch (a walltime stop can land on an epoch end)
+            seen[round(d["step"] / per, 1)] = d
+        frows = [[f"3D, epoch {e:.1f}"] + f(d) for e, d in sorted(seen.items())]
+        frows.append(["<b>v7 (released)</b>"] + f(v7[-1]))
+        ev = _eval({"run": "f3d-rope"}, "eval-long-jitter-filter")
+        status = ("Its 2010 evaluation and 10-year run follow the last epoch." if not ev else
+                  f"2010 with jitter + filter: 5-day ACC " + " / ".join(f"{ev['skill'][x]['5d']['acc']:.2f}" for x in ACC_VARS)
+                  + f", climate holds {faithful_days({'run': 'f3d-rope'}, 'eval-long-jitter-filter'):.0f} days.")
+        ft_html = ("<h3>The winner through v7's rollout recipe (in training)</h3><p>The 3D split-head model with rotary "
+                   "positions, fine-tuned for 8 epochs with v7's recipe (noise-conditioned norms, CRPS + spectral energy "
+                   "score, 4–24-step rollouts with patch jitter, anti-aliased embedding), on Swing's backfill queue in "
+                   f"4-hour links. Validation on 2010, against v7's final numbers. {status}</p>"
+                   + _table(["checkpoint", "CRPS", "spread/skill", "1-step error U_3 / T_7", "10-day error U_3 / T_7 / PS"], frows))
+    return ("<h2 id='threed'>A 3D model: one token per level (ViViT-style)</h2>"
+            "<p>The 2D model folds all 8 levels of a patch into one token, so vertical coupling happens out of attention's "
+            "reach. The 3D models (<code>vit_interp/model3d.py</code>) give each level its own token plus a surface level, "
+            "and factorize attention as ViViT does: <b>split heads</b> (in every block some heads attend up and down the "
+            "column, the rest across the level), <b>factorized</b> (a horizontal then a vertical attention sublayer per "
+            "block) or <b>alternating</b> blocks (as NVIDIA STRATA). Every architecture below was trained the same way "
+            "(v2's one-step recipe, 20 epochs, global batch 16, anti-aliased embedding), including a 2D baseline.</p>"
+            + _img("screen3d.png", "one-step validation loss per epoch, every architecture")
+            + _table(["architecture", "val loss, epoch 5", "epoch 10", "epoch 20", "1-step error U_3 / T_7", "5-day error U_3 / T_7"], rows)
+            + "<p>At the same size, the 3D split-head model has 27% lower one-step loss than the 2D model; rotary positions "
+              "give it the best 5-day errors of any model. One-step models of every kind blow up within months in free "
+              "runs: stability comes from the rollout stage.</p>" + ft_html)
+
+
 def analysis_sections(out: Path, release: dict) -> str:
     """Rossby and circuit results of the released model's exploration run."""
     explore = RUNS / release["run"] / "explore-final"
@@ -754,7 +817,7 @@ def build(out: Path) -> None:
                 f'<div class="muted">{"then drifts" if m.get("blowup") else "stable"}</div></div></div>')
     nbs = notebooks_html(out)
     nb_list = "".join(f'<li><a href="{h}">{s}</a>: {html.escape(NB_TITLES.get(s, ""))}</li>' for s, h in nbs)
-    body = f"""<nav class="muted"><a href="#architecture">Architecture</a><a href="training.html">Training</a><a href="#versions">Versions</a><a href="#stability">Stability</a><a href="#decade">Decade runs</a><a href="#rossby">Rossby waves</a><a href="#circuits">Circuits</a><a href="#notebooks">Notebooks</a></nav>
+    body = f"""<nav class="muted"><a href="#architecture">Architecture</a><a href="training.html">Training</a><a href="#versions">Versions</a><a href="#stability">Stability</a><a href="#decade">Decade runs</a><a href="#threed">3D model</a><a href="#rossby">Rossby waves</a><a href="#circuits">Circuits</a><a href="#notebooks">Notebooks</a></nav>
 <h1>Inside a ViT emulator of E3SM</h1>
 <p class="lede">A close-to-vanilla Vision Transformer that steps E3SMv3 (1°, AMIP) forward 6 hours, built to be taken apart for the
 interpretability hackathon: attention heads, circuits (Vi-CD) and physical laws (LAWFUL), with <a href="https://github.com/mahf708/exege">exege</a>. Checkpoints and latent archives are on Hugging Face:
@@ -776,6 +839,7 @@ column is the older, laxer criterion (global near-surface temperature off by mor
 {_img("versions_acc.png", "anomaly correlation vs lead, all evaluated versions") if has_cmp else ""}
 {stability_section(out)}
 {decade_section(out)}
+{threed_section(out)}
 {analysis_sections(out, analysed)}
 {rossby_versions(out)}
 <h2 id="notebooks">Hackathon notebooks (executed on {current["v"]["name"]})</h2><ul>{nb_list}</ul>

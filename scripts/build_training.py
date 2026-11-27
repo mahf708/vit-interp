@@ -22,6 +22,8 @@ STEP_SECONDS = {
     "vit3-p4-d384-l8/stage1": 0.434, "vit3-p4-d384-l8/ft4": 0.900,
     "vit3-p4-d384-l8/ft8": 0.917, "vit3-p4-d384-l8/ft8b": 0.943,
     "vit4-p4-d384-l8/long": 0.664,
+    "vit5a-p4-d384-l8/long": 1.05, "vit6-p4-d384-l8/long": 1.10, "vit7-p4-d384-l8/long": 1.18,
+    "s3d-split-d384-rope/stage1": 0.672, "f3d-rope/long": 3.2,
 }
 
 # Each version's full lineage, oldest stage first: (stage dir, role). Roles: "own" (trained for this
@@ -37,9 +39,14 @@ LINEAGE = {
            ("vit3-p4-d384-l8/ft8b", "extension")],
     "v4": [("vit2-p4-d384-l8/stage1", "inherited"), ("vit3-p4-d384-l8/stage1", "inherited"),
            ("vit4-p4-d384-l8/long", "own")],
+    "v7": [("vit2-p4-d384-l8/stage1", "inherited"), ("vit3-p4-d384-l8/stage1", "inherited"),
+           ("vit4-p4-d384-l8/long", "inherited"), ("vit5a-p4-d384-l8/long", "own"),
+           ("vit6-p4-d384-l8/long", "own"), ("vit7-p4-d384-l8/long", "own")],
+    "3D": [("s3d-split-d384-rope/stage1", "own"), ("f3d-rope/long", "own")],
 }
 RELEASED_FROM = {"v1": "vit-p4-d384-l8/ft2/ft8", "v2": "vit2-p4-d384-l8/ft8",
-                 "v3": "vit3-p4-d384-l8/ft8", "v4": "vit4-p4-d384-l8/long"}
+                 "v3": "vit3-p4-d384-l8/ft8", "v4": "vit4-p4-d384-l8/long",
+                 "v7": "vit7-p4-d384-l8/long", "3D": ""}
 
 COLORS = {1: "#2a78d6", 4: "#1baf7a", 8: "#eda100", "rand": "#eb6834"}
 
@@ -58,9 +65,15 @@ def _stage(runs: Path, rel: str) -> dict | None:
     if init:
         p = Path(init)
         init = f"{p.parent.relative_to(runs)}/{p.name}" if p.is_relative_to(runs) else init
+    # rows also come from mid-epoch walltime stops: steps per epoch from the end-of-epoch rows
+    ratios = [r["step"] / r["epoch"] for r in m if r["epoch"] >= 1]
+    per_epoch = int(round(min(ratios))) if ratios else (steps if m else None)
+    epochs_run = round(steps / per_epoch, 1) if per_epoch else 0
+    if epochs_run == int(epochs_run):
+        epochs_run = int(epochs_run)
     return {"rel": rel, "a": a, "m": m, "steps": steps, "best": best, "init": init,
-            "epochs_run": len(m), "gpu_h": steps * sec * N_GPU / 3600 if sec else None,
-            "per_epoch": (steps // len(m)) if m else None}
+            "epochs_run": epochs_run, "gpu_h": steps * sec * N_GPU / 3600 if sec else None,
+            "per_epoch": per_epoch}
 
 
 def _length(a: dict) -> tuple[str, object]:
@@ -97,6 +110,8 @@ def curriculum_table(runs: Path, v: str) -> str:
         best = s["best"]
         epochs = f"{s['epochs_run']} of {a['epochs']}" if s["epochs_run"] != a["epochs"] else f"{a['epochs']}"
         kept = f"epoch {best['epoch']} (val {best['val_loss']:.4f})" if best else "–"
+        if a.get("select") == "last" and s["m"]:
+            kept = f"latest weights (val {s['m'][-1]['val_loss']:.4f})"
         tag = {"inherited": " <span class='tag'>from an earlier version</span>",
                "extension": " <span class='tag training'>after the release; not released</span>"}.get(role, "")
         if rel == RELEASED_FROM[v]:
@@ -112,6 +127,14 @@ def curriculum_table(runs: Path, v: str) -> str:
             extras.append(f"noise-conditioned LN ({a['noise_dim']}-d {a.get('noise_type', 'gaussian')})")
         if a.get("head_conv"):
             extras.append(f"{a['head_conv']}×{a['head_conv']} output conv")
+        if a.get("energy_weight"):
+            extras.append(f"energy score {a['energy_weight']:g}")
+        if a.get("train_jitter"):
+            extras.append("patch jitter in training")
+        if a.get("embed_filter"):
+            extras.append("anti-aliased embedding")
+        if a.get("arch") == "vit3d":
+            extras.append(f"3D tokens, {a.get('attn3d')} attention ({a.get('heads_v')} vertical heads), {a.get('pos3d')} positions, dim {a.get('dim')}")
         rows.append([
             f"<code>{html.escape(rel)}</code>{tag}",
             f"<code>{html.escape(s['init'])}</code>" if s["init"] else "scratch",
@@ -294,7 +317,7 @@ def training_page(runs: Path, out: Path, page, eval_lookup=None) -> None:
               '<span><i style="background:#888;opacity:.35"></i>inherited from an earlier version</span>'
               '<span><i style="border:1.5px dashed #888;background:transparent"></i>after the release</span>'
               '<span>▼ released checkpoint</span></p>')
-    tables = "".join(f'<h3 id="{v}">{v}</h3>{curriculum_table(runs, v)}' for v in LINEAGE)
+    tables = "".join(f'<h3 id="{v}">{v if v != "3D" else "3D (ViViT-style), in training"}</h3>{curriculum_table(runs, v)}' for v in LINEAGE)
     body = f"""<style>{CSS_EXTRA}</style>
 <nav class="muted"><a href="#curriculum">Curriculum</a><a href="#methods">Methods</a><a href="#tables">Exact stages</a></nav>
 <h1>How the models were trained</h1>
@@ -311,6 +334,8 @@ on rollouts of the model's own forecasts; v3 continues from v2's one-step stage,
 <div class="card"><b>v2</b>: 1980–2009, + diagnostics, correctors, EMA, input noise, output conv. One step × 36 → 4-step × 3 → 8-step × 1 (+ 6 later, not released).</div>
 <div class="card"><b>v3</b>: v2's one-step model made stochastic, CRPS on 2 members. + one step × 12 → 4-step × 3 → 8-step × 1 (+ 6 later, not released).</div>
 <div class="card"><b>v4</b>: v3's one-step model → 4–16 random steps, last-step gradient × 4.</div>
+<div class="card"><b>v7</b>: v4 → + spectral energy score, 4–24 steps × 4 (v5) → + patch jitter in training × 4 (v6) → + anti-aliased embedding × 4.</div>
+<div class="card"><b>3D</b>: one token per level; split horizontal/vertical heads, rotary positions. One step × 20 → v7's rollout recipe × 8 (in training).</div>
 </div>
 <h2 id="methods">The methods, one by one</h2>
 {explainer()}
