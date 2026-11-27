@@ -10,7 +10,7 @@ apart: attention heads, the residual stream, edge circuits (Vi-CD), and physical
 
 | What | Where |
 |---|---|
-| Checkpoints (v1, v2) + normalization stats | https://huggingface.co/mahf708/vit-interp-e3sm |
+| Checkpoints (v1–v4, v7, v8) + normalization stats | https://huggingface.co/mahf708/vit-interp-e3sm |
 | 2010 input states (the evaluation year) | https://huggingface.co/datasets/mahf708/vit-interp-e3sm-2010 |
 | Latent archives + sparse autoencoders (exege format) | https://huggingface.co/datasets/mahf708/vit-interp-e3sm-latents |
 | exege with the `circuits` and `laws` layers | https://github.com/mahf708/exege, branch `mahf708/circuits` |

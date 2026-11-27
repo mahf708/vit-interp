@@ -49,3 +49,36 @@ def test_vertical_heads_mix_only_within_columns():
     out[0, 0, 5].sum().backward()  # token at level 0, patch 5
     g = x.grad[0].abs().sum(-1)  # (9, 32)
     assert g[:, 5].sum() > 0 and g[:, [i for i in range(32) if i != 5]].sum() == 0
+
+
+@pytest.mark.parametrize("attn3d,pos3d", [("split", "rope"), ("alternate", "abs")])
+def test_vit3d_edge_patching_is_exact(attn3d, pos3d):
+    from vit_interp import circuits as C
+
+    torch.manual_seed(0)
+    cfg = ViTConfig(in_chans=39, out_chans=44, img_size=(16, 32), dim=32, depth=2, heads=4, heads_v=2,
+                    arch="vit3d", attn3d=attn3d, pos3d=pos3d, head_conv=3, noise_dim=4)
+    net = build_net(cfg).eval()
+    for m in net.modules():  # make every part matter (zero-init heads and noise maps otherwise)
+        if isinstance(m, torch.nn.Linear):
+            torch.nn.init.normal_(m.weight, std=0.1)
+    xa, xb = torch.randn(2, 39, 16, 32), torch.randn(2, 39, 16, 32)
+    z = net.sample_noise(2, "cpu")
+    with torch.no_grad():
+        ya, yb = net(xa, noise=z), net(xb, noise=z)
+        corrupt = C.sender_outputs(net, xb, noise=z)
+        clean = C.edge_forward(net, xa, corrupt, C.full_mask(net, 1.0), noise=z)
+        dirty = C.edge_forward(net, xa, corrupt, C.full_mask(net, 0.0), noise=z)
+    assert torch.allclose(clean, ya, atol=1e-5)
+    assert torch.allclose(dirty, yb, atol=1e-5)
+    assert len(C.graph_of(net).edges()) > 0
+
+
+def test_factorized_refuses_edge_circuits():
+    from vit_interp import circuits as C
+
+    cfg = ViTConfig(in_chans=39, out_chans=34, img_size=(16, 32), dim=16, depth=1, heads=2, arch="vit3d",
+                    attn3d="factorized")
+    net = build_net(cfg)
+    with pytest.raises(NotImplementedError):
+        C.sender_outputs(net, torch.randn(1, 39, 16, 32))

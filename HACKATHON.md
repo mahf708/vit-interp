@@ -43,6 +43,7 @@ Each is a few lines per cell and ends with a **Try this** list.
 | `05_exege_latents` | latent archives, region analysis, sparse autoencoders |
 | `06_rossby_probe` | plant a Rossby wave; does the model know β? |
 | `07_exege_circuits_and_laws` | Vi-CD edge circuits and LAWFUL, through exege |
+| `08_vertical_heads_v8` | the 3D model's vertical heads: what each level reads, which heads matter |
 
 ## 2. One-liners (no Python)
 
@@ -103,6 +104,7 @@ listed at the top of `vit_interp/model.py` and drawn on the architecture schemat
 | v1 | the first model: 2000–2009, MSE, rollout-tuned | `pg.load("v1")`, `--source v1` |
 | v3 | v2 made stochastic (noise-conditioned LayerNorms), trained with CRPS: the best 10-day skill and calibrated ensembles | `pg.load("v3")`, `--source v3` |
 | v4 | v3 trained on long random-length rollouts with last-step gradients | `pg.load("v4")`, `--source v4` |
+| **v8 (3D, best)** | one token per level (8 levels + surface); in each block 4 horizontal and 2 **vertical** heads; best forecaster (5-day ACC 0.93/0.90/0.88/0.85) and, with jitter + filter, a realistic climate for the full decade in 3 of 3 runs | `pg.load("v8")`, `--source v8`; notebook 08 |
 | **v7 (long runs)** | v4 + spectral energy score, patch-jitter training and STRATA's anti-aliased patch embedding: with jitter + the seam filter, a realistic climate for 6.6–10 years (3 runs) | `pg.load("v7")`; `pg.rollout` turns jitter + filter on past 10 days |
 
 v3 and v4 draw fresh noise on every `em.step` (see the README's *Stochastic models*): a natural

@@ -178,14 +178,15 @@ VERSIONS = [
         "name": "v8",
         "title": "3D (ViViT-style): one token per level, split horizontal/vertical heads",
         "run": "f3d-rope",
-        "checkpoint": "f3d-rope/long/best.pt",
+        "checkpoint": "vit-p4-d384-l8/release/v8.pt",
         "headline_eval": "eval-long-jitter-filter",
         "stages": [("4–24-step rollouts, v7's recipe, 8 epochs", "long")],
         "evals": [("v8 + jitter + seam filter", "eval-long-jitter-filter")],
         "recipe": [
             "A new architecture (<code>vit_interp/model3d.py</code>): each of the 8 levels (T, U, V, water) and a surface level (PS, TS, forcings) is its own token, 9 × 4050 tokens; in every block 4 heads attend across their level and 2 up and down their column (ViViT's factorized dot-product attention); rotary horizontal positions, periodic in longitude; anti-aliased patch embedding; 14.4 M parameters.",
             "Trained from scratch: 20 one-step epochs (the winner of a 7-way architecture screen, see <a href=\"../index.html#threed\">3D model</a>), then 8 epochs of v7's rollout recipe on Swing's backfill queue.",
-            "The best forecaster of any version (5-day ACC 0.93 / 0.90 / 0.88 / 0.85, 10-day 0.63 / 0.59 / 0.56 / 0.45); its 10-year run stays realistic all decade with a slow drift in the last two years. Not yet released: multi-seed decade check, and the interpretability tools learning 3D tokens, first.",
+            "The best forecaster of any version (5-day ACC 0.93 / 0.90 / 0.88 / 0.85, 10-day 0.63 / 0.59 / 0.56 / 0.45); with jitter + the seam filter all three 10-year runs stay realistic the whole decade, with a slow shared drift in the last two years.",
+            "Load: <code>pg.load(\"v8\")</code>, <code>--source v8</code> (Hugging Face <code>v8/v8.pt</code>). Every tool works on it: circuits and LAWFUL (heads 4–5 of each block are the vertical ones), <code>pg.vertical_attention</code>, the head atlas, ablation, attribution, and the latents adapter at a chosen level (<code>level=</code>). Notebook 08 is a tour of its vertical heads.",
         ],
         "changes": "3D tokens with vertical attention heads; trained from scratch",
     },
@@ -635,6 +636,7 @@ NB_TITLES = {
     "05_exege_latents": "latent archives, region analysis, sparse autoencoders (exege)",
     "06_rossby_probe": "plant a Rossby wave: does the model know β?",
     "07_exege_circuits_and_laws": "Vi-CD edge circuits and LAWFUL through exege",
+    "08_vertical_heads_v8": "the 3D model's vertical heads (executed on v8, quick settings)",
 }
 
 
@@ -1030,7 +1032,7 @@ column is the older, laxer criterion (global near-surface temperature off by mor
 {threed_section(out)}
 {analysis_sections(out, analysed)}
 {rossby_versions(out)}
-<h2 id="notebooks">Hackathon notebooks (executed on {current["v"]["name"]})</h2><ul>{nb_list}</ul>
+<h2 id="notebooks">Hackathon notebooks (00–07 executed on {current["v"]["name"]}, 08 on v8)</h2><ul>{nb_list}</ul>
 <p class="muted">Run them on Swing: <code>HACKATHON.md</code> in the vit-interp repository; the exege layers are on the
 <code>mahf708/circuits</code> branch of exege.</p>"""
     from build_training import training_page

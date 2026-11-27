@@ -552,4 +552,67 @@ $ exege laws rossby --adapter vit-interp --source $CKPT --u U_2,U_3,U_4 --v V_2,
 """),
 ])
 
+write("08_vertical_heads_v8.ipynb", [
+    md("""
+# 08 · Vertical heads in the 3D model (v8)
+
+v8 gives every **level** its own token: 8 atmospheric levels (T, U, V, water) and a **surface** level (PS, TS, forcings), 9 × 4050 tokens. In every block, heads 0–3 attend **across their level** (like the 2D models' heads) and heads 4–5 attend **up and down their column**, over the 9 levels of one 4° patch. Vertical coupling, which the 2D models hide inside the patch embedding and the MLPs, is now done by heads you can look at.
+
+Everything from notebooks 01–07 works on v8; the residual stream has an extra level axis, `(B, 9, 4050, 384)`, and stochastic models run with zero noise in the playground (their median path).
+"""),
+    code(SETUP.replace('em, meta = pg.load()      # or pg.load("/path/to/checkpoint.pt"); $PLAYGROUND_CKPT also works',
+                       'em, meta = pg.load("v8")  # the 3D model')),
+    code("""
+kinds = pg.head_kinds(em)            # {(layer, head): "h" or "v"}
+print("vertical heads:", [f"L{l}H{h}" for (l, h), k in kinds.items() if k == "v"])
+print("token levels:", pg.LEVELS3D)
+x = pg.state("2010-01-15T00").to(next(em.parameters()).device)
+"""),
+    md("## What does a vertical head read?\\nRows are the level doing the reading, columns the level read (0 = model top, 7 = near surface, 8 = the surface token)."),
+    code("""
+fig, axes = plt.subplots(2, 4, figsize=(15, 7))
+for ax, layer in zip(axes.flat, range(em.cfg.depth)):
+    a = pg.vertical_attention(em, x, layer, 4)          # mean over all columns of the globe
+    ax.imshow(a, cmap="viridis", vmin=0, vmax=1); ax.set_title(f"L{layer}H4")
+    ax.set_xticks(range(9)); ax.set_yticks(range(9)); ax.set_xlabel("level read"); ax.set_ylabel("reading level")
+plt.tight_layout()
+"""),
+    md("The same head at one place: does it read differently over the Tibetan Plateau, the tropics, the North Pacific?"),
+    code("""
+places = {"North Pacific": (45, 180), "Tibet": (32, 88), "tropical Pacific": (0, 200), "Southern Ocean": (-55, 90)}
+fig, axes = plt.subplots(1, 4, figsize=(15, 3.8))
+for ax, (name, q) in zip(axes, places.items()):
+    ax.imshow(pg.vertical_attention(em, x, 3, 4, query=q), vmin=0, vmax=1); ax.set_title(f"L3H4, {name}")
+plt.tight_layout()
+"""),
+    md("## The head atlas, with vertical heads\\n`dlev` > 0: the head reads levels below the reader (toward the surface). Horizontal heads are measured at token level 3 (jet level)."),
+    code("""
+xs = torch.cat([pg.state(t) for t in (["2010-01-15T00"] if FAST else ["2010-01-15T00", "2010-07-15T00"])]).to(x.device)
+atlas = pg.head_atlas(em, xs, layers=[1, 3, 5] if FAST else None)
+atlas[(atlas.band == "all")].round(2)
+"""),
+    md("## Which heads matter? Ablation and direct attribution"),
+    code("""
+box = pg.box(30, 60, 150, 210)                               # the North Pacific
+metric = lambda t: pg.box_mean(t[0, pg.ch("T_7")], box)       # near-surface temperature tendency
+sweep = pg.sweep_components(em, x, metric, which=[f"L{l}H{h}" for l in range(em.cfg.depth) for h in (4, 5)])
+sweep.head(8)
+"""),
+    code("""
+maps, table = pg.direct_attribution(em, x, "T_7", box)
+table["kind"] = [("v" if kinds.get((int(c[1:].split("H")[0]), int(c.split("H")[1])), "h") == "v" else "h")
+                 if c.startswith("L") and "H" in c else "" for c in table.component]
+table.head(10)
+"""),
+    md("""
+## Try this
+
+1. **Vertical heads and physics.** Do vertical heads in late blocks read the surface token (level 8) over land more than over ocean? Over the Tibetan Plateau, where v4's instability started?
+2. **Baroclinicity.** Plant a Rossby wave (`exege laws rossby --source v8`) and ablate the vertical heads: does the planted wave's dispersion change? Does a vertical-head circuit carry the law?
+3. **Steering level.** In v2 the Rossby fit improved with U_5 as the background wind. Which levels do the vertical heads route into level 3?
+4. **Circuits across the vertical.** `exege circuits prune --source v8 ...`: what share of the 88-ish edges in the North Pacific circuit leave vertical heads?
+5. **2D vs 3D.** Compare `pg.lens` for v2 and v8: does the answer form earlier when vertical mixing is explicit?
+"""),
+])
+
 print("wrote", sorted(p.name for p in HERE.glob("*.ipynb")))

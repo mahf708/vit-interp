@@ -52,6 +52,20 @@ cache = {}; em.step(x.to(next(em.parameters()).device), cache=cache, names={"blo
 - Latents: `exege latents …` on `hf://datasets/mahf708/vit-interp-e3sm-latents/v2-2010-jan` (or `-jul`);
   layer 0 = embedding, i + 1 = block i; SAE bases in each archive's `bases/`.
 
+## The 3D model (v8)
+
+- `pg.load("v8")`. One token per (level, patch): 8 atmospheric levels (T, U, V, water) + a surface level
+  (PS, TS, forcings) = 9 × 4050 tokens; residual stream `(B, 9, 4050, 384)`; rotary horizontal positions.
+- In every block heads 0–3 are **horizontal** (across a level) and heads 4–5 **vertical** (up and down a
+  column): `pg.head_kinds(em)`. Patterns: `blocks.{i}.attn.hook_pattern_h` `(B, 4, 9, 4050, 4050)` and
+  `hook_pattern_v` `(B, 2, 4050, 9, 9)`; `hook_result` is `(B, 9, 4050, 6, 384)` (head axis second to last).
+- `pg.attention(..., level=3)` for horizontal heads, `pg.vertical_attention(em, x, layer, head, query)` for
+  vertical ones; head atlas, ablation, lens and direct attribution all work. Circuits/LAWFUL use the same
+  57-sender graph (`a{i}.h4`, `a{i}.h5` are vertical). Latents: `open_intervenable("v8", "vit-interp-tokens",
+  level=3)` exposes one token level.
+- Stochastic models (v3, v4, v7, v8) run with **zero noise** in the playground so comparisons are clean;
+  pass `noise=` to `pg.step` for a draw.
+
 ## Rules of the road
 
 - **GPU:** on Swing, compute on a GPU node (`qsub -I -A E3SM -q gpu -l select=1:ngpus=1 -l walltime=4:00:00`),

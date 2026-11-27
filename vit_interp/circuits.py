@@ -81,8 +81,30 @@ def graph_of(model: ViT) -> Graph:
     return Graph(model.cfg.depth, model.cfg.heads)
 
 
-def _blank(noise=None) -> _Ctx:
+def _is3d(model) -> bool:
+    return getattr(model.cfg, "arch", "vit") == "vit3d"
+
+
+def _blank(noise=None, model=None) -> _Ctx:
+    """A hook-free context. 3D models broadcast the per-patch noise over their levels."""
+    if noise is not None and model is not None and _is3d(model):
+        noise = noise[:, None]
     return _Ctx(None, None, None, noise)
+
+
+def _rope(model, x_norm):
+    """Rotary tables of a 3D model with rotary positions (else None)."""
+    if _is3d(model) and model.cfg.pos3d == "rope":
+        from .model3d import _rope_tables
+
+        return _rope_tables(*model.cfg.grid, model.cfg.d_head, x_norm.device, x_norm.dtype)
+    return None
+
+
+def _check_layout(model):
+    if _is3d(model) and model.cfg.attn3d == "factorized":
+        raise NotImplementedError("edge circuits need one attention sublayer per block "
+                                  "(attn3d 'split' or 'alternate'), not 'factorized'")
 
 
 def _noise_for(model: ViT, x_norm, noise):
@@ -93,33 +115,43 @@ def _noise_for(model: ViT, x_norm, noise):
     return noise
 
 
-def _attn_heads(model: ViT, i: int, x_in, noise=None) -> torch.Tensor:
+def _attn_heads(model: ViT, i: int, x_in, noise=None, rope=None) -> torch.Tensor:
     blk = model.blocks[i]
     cache: dict = {}
     ctx = _Ctx(None, cache, {f"blocks.{i}.attn.hook_result"})
-    blk.attn(blk.ln1.forward_ctx(x_in, _blank(noise), ""), ctx, f"blocks.{i}.attn")
-    return cache[f"blocks.{i}.attn.hook_result"]  # (B, N, H, D), no bias
+    a_in = blk.ln1.forward_ctx(x_in, _blank(noise, model), "")
+    if _is3d(model):
+        blk.attn(a_in, ctx, f"blocks.{i}.attn", rope)
+    else:
+        blk.attn(a_in, ctx, f"blocks.{i}.attn")
+    return cache[f"blocks.{i}.attn.hook_result"]  # (B, [L,] N, H, D), no bias
 
 
 def _mlp(model: ViT, i: int, x_in, noise=None) -> torch.Tensor:
     blk = model.blocks[i]
-    return blk.mlp(blk.ln2.forward_ctx(x_in, _blank(noise), ""), _blank(), "")
+    return blk.mlp(blk.ln2.forward_ctx(x_in, _blank(noise, model), ""), _blank(), "")
+
+
+def _head(res: torch.Tensor, h: int) -> torch.Tensor:
+    """One head's output from hook_result: (B, N, H, D) or (B, L, N, H, D) -> without H."""
+    return res[..., h, :]
 
 
 @torch.no_grad()
 def sender_outputs(model: ViT, x_norm, noise=None) -> torch.Tensor:
     """(n_senders, B, N, D) sender outputs of an ordinary forward pass (e.g. the corrupted one).
     Stochastic models: ``noise`` (B, N, d), the same as the patched run's."""
+    _check_layout(model)
     noise = _noise_for(model, x_norm, noise)
     g = graph_of(model)
-    names = {"hook_embed", "hook_pos_embed"}
+    names = set()
     for i in range(g.depth):
         names |= {f"blocks.{i}.attn.hook_result", f"blocks.{i}.hook_mlp_out"}
     _, c = model.run_with_cache(x_norm, names=names, noise=noise)
-    out = [c["hook_embed"] + c["hook_pos_embed"]]
+    out = [model.embed(x_norm, _blank())]  # the whole input embedding (patch + position [+ level])
     for i in range(g.depth):
         res = c[f"blocks.{i}.attn.hook_result"]
-        out += [res[:, :, h] for h in range(g.heads)] + [c[f"blocks.{i}.hook_mlp_out"]]
+        out += [_head(res, h) for h in range(g.heads)] + [c[f"blocks.{i}.hook_mlp_out"]]
     return torch.stack(out)
 
 
@@ -131,26 +163,28 @@ def edge_forward(model: ViT, x_norm, corrupt: torch.Tensor, mask: torch.Tensor,
     carries the clean value, 0 = the corrupted one; entries for edges that do not exist are
     ignored.
     """
+    _check_layout(model)
     noise = _noise_for(model, x_norm, noise)
     g = graph_of(model)
+    rope = _rope(model, x_norm)
     mask = mask.to(corrupt.dtype)
     S: list[torch.Tensor] = [model.embed(x_norm, _blank())]
-    bias = torch.zeros_like(S[0][:1, :1])
+    bias = torch.zeros((), dtype=S[0].dtype, device=S[0].device)
 
     def receive(r: str):
         j = g.receiver_index(r)
         up = g.upstream(r)
         clean = torch.stack(S[: len(up)])
         corr = corrupt[: len(up)]
-        m = mask[up, j].view(-1, 1, 1, 1)
+        m = mask[up, j].view(-1, *([1] * (clean.ndim - 1)))
         return (corr + m * (clean - corr)).sum(0) + bias
 
     for i, blk in enumerate(model.blocks):
-        res = _attn_heads(model, i, receive(f"a{i}"), noise)
-        S += [res[:, :, h] for h in range(g.heads)]
+        res = _attn_heads(model, i, receive(f"a{i}"), noise, rope)
+        S += [_head(res, h) for h in range(g.heads)]
         bias = bias + blk.attn.b_O
         S.append(_mlp(model, i, receive(f"m{i}"), noise))
-    return model.unembed(receive("out"), _blank(noise))
+    return model.unembed(receive("out"), _blank(noise, model))
 
 
 def full_mask(model: ViT, value: float = 1.0, device=None) -> torch.Tensor:

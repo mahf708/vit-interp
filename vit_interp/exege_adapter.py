@@ -76,11 +76,12 @@ class _Base:
         dtype: str = "float32",
         batch_limit: int | None = None,
         seed: int = 0,
+        level: int = 3,
     ) -> None:
         try:
             path = resolve_checkpoint(source)  # a path, or v1 / v2 (downloaded off LCRC)
         except FileNotFoundError:
-            raise AdapterError(f"no checkpoint at {source} (a path, or v1 / v2)") from None
+            raise AdapterError(f"no checkpoint at {source} (a path, or v1 / v2 / v3 / v4 / v7 / v8)") from None
         if data == DATA_ROOT and year == 2010:
             data = ensure_data(data, year)
         if dtype not in _DTYPES:
@@ -107,7 +108,13 @@ class _Base:
         self.year = year
         self.batch_limit = batch_limit
         self.seed = int(seed)
+        self.level = int(level)
+        self.is3d = getattr(self.cfg, "arch", "vit") == "vit3d"
+        if self.is3d and not 0 <= self.level <= 8:
+            raise RequestError("level is 0..7 (0 = top) or 8 (the surface token level)")
         self._options = {"data": str(data), "year": year, "dtype": dtype, "seed": self.seed}
+        if self.is3d:
+            self._options["level"] = self.level
         # Stochastic models: one noise field, a function of ``seed`` alone, used by every run
         # (plain, source and patched alike), so patching stays exact and a perturbation's
         # response is measured under common random numbers.
@@ -297,9 +304,9 @@ class ViTEmulator(_Base):
             if k.endswith("hook_result"):
                 hs = heads[int(k.split(".")[1])]
 
-                def swap(t, k=k, hs=hs):
+                def swap(t, k=k, hs=hs):  # the head axis is second to last (2D and 3D)
                     t = t.clone()
-                    t[:, :, hs] = src[k][:, :, hs]
+                    t[..., hs, :] = src[k][..., hs, :]
                     return t
 
                 hooks[k] = swap
@@ -344,7 +351,8 @@ class ViTTokens(_Base):
             calendar="noleap",
             timestep_seconds=21600,
             experiment={"epoch": self.epoch, "patch": self.cfg.patch, "dim": self.cfg.dim,
-                        "depth": self.cfg.depth, "heads": self.cfg.heads},
+                        "depth": self.cfg.depth, "heads": self.cfg.heads,
+                        **({"arch": "vit3d", "token_level": self.level} if self.is3d else {})},
             options=self._options,
         )
 
@@ -399,7 +407,10 @@ class ViTTokens(_Base):
                 if (layer, t) not in edits and (layer, t) not in record:
                     continue
 
-                def hook(h, layer=layer, t=t):
+                def hook(h, layer=layer, t=t):  # 3D models: the adapter's token level of the stream
+                    full = h
+                    if self.is3d:
+                        h = h[:, self.level]
                     a = h[0].float().cpu().numpy()
                     for edit in edits.get((layer, t), ()):
                         a = np.asarray(edit(a.copy()), dtype=np.float32)
@@ -407,7 +418,12 @@ class ViTTokens(_Base):
                             raise RequestError(f"an edit returned {a.shape}, not {tuple(h.shape[1:])}")
                     if (layer, t) in record:
                         kept[(layer, t)] = a.astype(np.float32).copy()
-                    return torch.as_tensor(a, device=h.device, dtype=h.dtype)[None]
+                    new = torch.as_tensor(a, device=h.device, dtype=h.dtype)[None]
+                    if self.is3d:
+                        full = full.clone()
+                        full[:, self.level] = new
+                        return full
+                    return new
 
                 hk_t[f"blocks.{layer}.hook_resid_post"] = hook
             z = None

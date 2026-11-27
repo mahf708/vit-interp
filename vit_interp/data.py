@@ -56,20 +56,20 @@ def ensure_data(root: str = DATA_ROOT, year: int = 2010) -> str:
 
 
 def resolve_checkpoint(spec: str | Path) -> Path:
-    """A checkpoint file, or ``v1``..``v4``, ``v7`` (also ``hf:v2``): the released checkpoints, from the
+    """A checkpoint file, or ``v1``..``v4``, ``v7``, ``v8`` (also ``hf:v2``): the released checkpoints, from the
     LCRC release directory when it is there, else downloaded from Hugging Face."""
     s = str(spec)
     if Path(s).is_file():
         return Path(s)
     name = s.removeprefix("hf:")
-    if name in ("v1", "v2", "v3", "v4", "v7"):
+    if name in ("v1", "v2", "v3", "v4", "v7", "v8"):
         lcrc = Path("/lcrc/globalscratch/ac.ngmahfouz/vit-interp/runs/vit-p4-d384-l8/release") / f"{name}.pt"
         if lcrc.is_file():
             return lcrc
         from huggingface_hub import hf_hub_download
 
         return Path(hf_hub_download(HF_MODEL_REPO, f"{name}/{name}.pt"))
-    raise FileNotFoundError(f"no checkpoint {s!r} (a path, or v1 / v2 / v3 / v4 / v7)")
+    raise FileNotFoundError(f"no checkpoint {s!r} (a path, or v1 / v2 / v3 / v4 / v7 / v8)")
 
 LEVELS = range(8)  # 0 = model top ... 7 = near surface
 PROG_NAMES = (

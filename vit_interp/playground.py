@@ -44,8 +44,34 @@ __all__ = [
     "ALL_NAMES", "FAST", "PROG_NAMES", "ablate", "attention", "box", "box_mean", "ch",
     "components", "direct_attribution", "head_atlas", "lens", "load", "meta", "plot_map",
     "plot_maps", "plot_tokens", "rollout", "state", "step", "sweep_components", "token_latlon",
-    "token_of", "truth",
+    "token_of", "truth", "head_kinds", "vertical_attention", "is3d", "LEVELS3D",
 ]
+
+LEVELS3D = [f"level {k}" for k in range(8)] + ["surface"]  # the 9 token levels of a 3D model (v8)
+
+
+def is3d(em) -> bool:
+    """A 3D model (v8): one token per (level, patch); attention heads are horizontal or vertical."""
+    return getattr(em.cfg, "arch", "vit") == "vit3d"
+
+
+def head_kinds(em) -> dict:
+    """{(layer, head): "h" or "v"}: whether a head attends across its level (horizontal) or up and
+    down its column (vertical). Every head of a 2D model is horizontal."""
+    out = {}
+    for i, blk in enumerate(em.net.blocks):
+        axes = getattr(getattr(blk, "attn", None), "axes", None) or ["h"] * em.cfg.heads
+        for h, a in enumerate(axes):
+            out[(i, h)] = a
+    return out
+
+
+def _noise(em, b: int, device):
+    """The playground's noise for stochastic models: zero (the model's median path), so that
+    comparisons between runs (ablations, attributions) are not confounded by noise draws."""
+    if not em.cfg.noise_dim:
+        return None
+    return torch.zeros(b, em.cfg.n_tokens, em.cfg.noise_dim, device=device)
 
 
 # -- loading and running ---------------------------------------------------------------------
@@ -127,9 +153,12 @@ def _device():
 
 
 @torch.no_grad()
-def step(em, x, hooks=None, cache=None, names=None):
-    """(next prognostic state, 6-h tendency), both physical, (B, 34, 180, 360)."""
-    nxt, d = em.step(x, hooks=hooks, cache=cache, names=names)
+def step(em, x, hooks=None, cache=None, names=None, noise=None):
+    """(next prognostic state, 6-h tendency), both physical, (B, 34, 180, 360). Stochastic models
+    run with zero noise unless ``noise`` is given (so repeated calls are comparable)."""
+    if noise is None:
+        noise = _noise(em, x.shape[0], x.device)
+    nxt, d = em.step(x, hooks=hooks, cache=cache, names=names, noise=noise)
     return nxt, d[:, :N_PROG].float() * em.res_std
 
 
@@ -298,18 +327,44 @@ def plot_tokens(values, title: str = "", cmap: str = "viridis", mark=None, log: 
 
 
 @torch.no_grad()
-def patterns(em, x, layer: int) -> torch.Tensor:
-    """Attention patterns of one layer: (B, heads, 4050, 4050), rows are queries."""
-    name = f"blocks.{layer}.attn.hook_pattern"
+def patterns(em, x, layer: int, kind: str = "h") -> torch.Tensor:
+    """Attention patterns of one layer, rows are queries. 2D models: (B, heads, 4050, 4050).
+    3D models: ``kind="h"`` gives the horizontal heads (B, heads_h, 9 levels, 4050, 4050);
+    ``kind="v"`` the vertical heads (B, heads_v, 4050 columns, 9, 9)."""
+    name = f"blocks.{layer}.attn.hook_pattern" + (f"_{kind}" if is3d(em) else "")
     cache: dict = {}
-    em.step(x, cache=cache, names={name})
+    step(em, x, cache=cache, names={name})
     return cache[name].float()
 
 
-def attention(em, x, layer: int, head: int, query: tuple[float, float]) -> np.ndarray:
-    """Where the token at ``query=(lat, lon)`` looks, in head ``head`` of ``layer``: (45, 90)."""
+def _sub_index(em, layer: int, head: int, kind: str) -> int:
+    """A head's index among the heads of its kind (3D patterns are stored per kind)."""
+    kinds = head_kinds(em)
+    if kinds[(layer, head)] != kind:
+        other = "vertical_attention" if kind == "h" else "attention"
+        raise ValueError(f"L{layer}H{head} is {'vertical' if kind == 'h' else 'horizontal'}: use pg.{other}")
+    return [h for h in range(em.cfg.heads) if kinds[(layer, h)] == kind].index(head)
+
+
+def attention(em, x, layer: int, head: int, query: tuple[float, float], level: int = 3) -> np.ndarray:
+    """Where the token at ``query=(lat, lon)`` looks, in head ``head`` of ``layer``: (45, 90).
+    3D models: a horizontal head, at token level ``level`` (0 = top ... 7, 8 = surface)."""
     q = token_of(*query)
-    return patterns(em, x[:1], layer)[0, head, q].reshape(45, 90).cpu().numpy()
+    if not is3d(em):
+        return patterns(em, x[:1], layer)[0, head, q].reshape(45, 90).cpu().numpy()
+    h = _sub_index(em, layer, head, "h")
+    return patterns(em, x[:1], layer, "h")[0, h, level, q].reshape(45, 90).cpu().numpy()
+
+
+def vertical_attention(em, x, layer: int, head: int, query: tuple[float, float] | None = None) -> np.ndarray:
+    """3D models: what a vertical head reads up and down a column, (9, 9) with rows the reading
+    level and columns the level read (0 = top ... 7, 8 = surface). At the token containing
+    ``query=(lat, lon)``, or the mean over all columns without one."""
+    if not is3d(em):
+        raise ValueError("vertical attention exists only in 3D models (v8)")
+    h = _sub_index(em, layer, head, "v")
+    p = patterns(em, x[:1], layer, "v")[0, h]  # (N, 9, 9)
+    return (p[token_of(*query)] if query is not None else p.mean(0)).cpu().numpy()
 
 
 def _offsets(device):
@@ -325,7 +380,7 @@ def _offsets(device):
 
 @torch.no_grad()
 def head_atlas(em, xs: torch.Tensor, layers: Iterable[int] | None = None,
-               bands: dict | None = None):
+               bands: dict | None = None, level: int = 3):
     """A table of what every head does, averaged over the states in ``xs`` and the query
     tokens in each latitude band:
 
@@ -334,11 +389,18 @@ def head_atlas(em, xs: torch.Tensor, layers: Iterable[int] | None = None,
     dist      attention-weighted mean distance (degrees)
     self      weight on the query's own token
     entropy   of the pattern, in nats (log 4050 = 8.3 is uniform)
+
+    3D models (v8) add a ``kind`` column: horizontal heads ("h") are measured as above at token
+    level ``level``; vertical heads ("v") get ``dlev`` (attention-weighted mean of read level
+    minus reading level, > 0 = reads lower, toward the surface), ``self`` and ``entropy``
+    (log 9 = 2.2 is uniform), averaged over all reading levels.
     """
     import pandas as pd
 
     bands = bands or {"all": (-90, 90), "NH mid": (30, 60), "tropics": (-20, 20),
                       "SH mid": (-60, -30)}
+    if is3d(em):
+        return _head_atlas3d(em, xs, layers, bands, level)
     dev = xs.device
     dx, dy, dist, la = _offsets(dev)
     layers = range(em.cfg.depth) if layers is None else layers
@@ -360,6 +422,46 @@ def head_atlas(em, xs: torch.Tensor, layers: Iterable[int] | None = None,
                 rows.append({"layer": layer, "head": h, "band": band,
                              **{k: float(acc[i, h, q].mean()) for i, k in
                                 enumerate(["dx", "dy", "dist", "self", "entropy"])}})
+    return pd.DataFrame(rows)
+
+
+@torch.no_grad()
+def _head_atlas3d(em, xs, layers, bands, level):
+    import pandas as pd
+
+    dev = xs.device
+    dx, dy, dist, la = _offsets(dev)
+    eye = torch.eye(dx.shape[0], device=dev, dtype=torch.bool)
+    lev = torch.arange(9, device=dev, dtype=torch.float32)
+    dl = lev[None, :] - lev[:, None]  # read level minus reading level
+    kinds = head_kinds(em)
+    layers = range(em.cfg.depth) if layers is None else layers
+    rows = []
+    for layer in layers:
+        hh = [h for h in range(em.cfg.heads) if kinds[(layer, h)] == "h"]
+        vh = [h for h in range(em.cfg.heads) if kinds[(layer, h)] == "v"]
+        acc_h = acc_v = None
+        for b in range(xs.shape[0]):
+            if hh:
+                p = patterns(em, xs[b:b + 1], layer, "h")[0, :, level]  # (Hh, N, N)
+                st = torch.stack([(p * dx).sum(-1), (p * dy).sum(-1), (p * dist).sum(-1), p[:, eye],
+                                  -(p * torch.log(p.clamp_min(1e-12))).sum(-1)])
+                acc_h = st if acc_h is None else acc_h + st
+            if vh:
+                p = patterns(em, xs[b:b + 1], layer, "v")[0]  # (Hv, N, 9, 9)
+                st = torch.stack([(p * dl).sum(-1).mean(-1), torch.diagonal(p, dim1=-2, dim2=-1).mean(-1),
+                                  -(p * torch.log(p.clamp_min(1e-12))).sum(-1).mean(-1)])  # (3, Hv, N)
+                acc_v = st if acc_v is None else acc_v + st
+        for kind, idx, acc, keys in (("h", hh, acc_h, ["dx", "dy", "dist", "self", "entropy"]),
+                                     ("v", vh, acc_v, ["dlev", "self", "entropy"])):
+            if acc is None:
+                continue
+            a = (acc / xs.shape[0]).cpu().numpy()
+            for j, h in enumerate(idx):
+                for band, (lo, hi) in bands.items():
+                    q = (la >= lo) & (la <= hi)
+                    rows.append({"layer": layer, "head": h, "kind": kind, "band": band,
+                                 **{k: float(a[i, j, q].mean()) for i, k in enumerate(keys)}})
     return pd.DataFrame(rows)
 
 
@@ -409,13 +511,15 @@ def ablate(em, x, heads: Sequence[tuple[int, int]] = (), mlps: Sequence[int] = (
         by_layer.setdefault(i, []).append(h)
     hooks = {}
 
-    def knock(t, idx=None):
+    def knock(t, idx=None):  # heads: (..., N, H, D), the head axis second to last; MLPs: (..., N, D)
         t = t.clone()
-        sl = (slice(None), slice(None), idx) if idx is not None else (Ellipsis,)
+        sl = (Ellipsis, idx, slice(None)) if idx is not None else (Ellipsis,)
+        tok = -3 if idx is not None else -2  # the token axis: (..., N, H, D) or (..., N, D)
         if mode == "zero":
             t[sl] = 0
-        elif mode == "mean":
-            t[sl] = t[sl].mean(1, keepdim=True).expand_as(t[sl])
+        elif mode == "mean":  # each level keeps its own mean (3D)
+            v = t[sl]
+            t[sl] = v.mean(tok, keepdim=True).expand_as(v)
         else:
             raise ValueError("mode is 'zero' or 'mean'")
         return t
@@ -456,13 +560,14 @@ def lens(em, x):
     per layer and channel group, the RMSE against the real output relative to its RMS."""
     import pandas as pd
 
-    names = {"hook_embed", "hook_pos_embed"} | {
-        f"blocks.{i}.hook_resid_post" for i in range(em.cfg.depth)}
+    from .circuits import _blank
+
+    names = {f"blocks.{i}.hook_resid_post" for i in range(em.cfg.depth)}
     cache: dict = {}
     _, final = step(em, x, cache=cache, names=names)
-    rs = [cache["hook_embed"] + cache["hook_pos_embed"]] + [
+    rs = [em.net.embed(em.normalize(x), _Ctx(None, None, None))] + [
         cache[f"blocks.{i}.hook_resid_post"] for i in range(em.cfg.depth)]
-    blank = _Ctx(None, None, None)
+    blank = _blank(_noise(em, x.shape[0], x.device), em.net)
     decoded = [em.net.unembed(r, blank)[:, :N_PROG].float() * em.res_std for r in rs]
     w = torch.tensor(_area(), dtype=torch.float32, device=final.device)
     groups = {"PS/TS": ["PS", "TS"], "T": [f"T_{k}" for k in range(8)],
@@ -495,44 +600,50 @@ def direct_attribution(em, x, channel: str, mask: np.ndarray | None = None):
     to the area mean over ``mask`` (whole globe without one). The contributions sum to the
     real output.
     """
+    import contextlib
+
     import pandas as pd
 
+    from .circuits import _blank, _head
+
     L = em.cfg.depth
-    names = {"hook_embed", "hook_pos_embed", f"blocks.{L - 1}.hook_resid_post"}
+    names = {f"blocks.{L - 1}.hook_resid_post"}
     for i in range(L):
         names |= {f"blocks.{i}.attn.hook_result", f"blocks.{i}.hook_mlp_out"}
     cache: dict = {}
-    _, final = step(em, x, cache=cache, names=names)
+    _, final = step(em, x, cache=cache, names=names)  # zero noise: the final norm is a plain LayerNorm
     r = cache[f"blocks.{L - 1}.hook_resid_post"]
     ln = em.net.ln_final
     scale = (r.var(-1, keepdim=True, unbiased=False) + ln.eps).sqrt()
     c = ch(channel)
-    C = em.cfg.out_chans
-    W = em.net.head.weight  # (C * p * p, D)
-    k = getattr(em.cfg, "head_conv", 0)
+    blank = _blank(_noise(em, x.shape[0], x.device), em.net)
 
-    def decode(t):  # (B, N, C*p*p) head output -> channel c, after the output conv if any
-        y = em.net.unpatchify(t, C)
-        if k:  # the conv mixes channels, so decode all of them before taking c (it is linear)
-            y = torch.nn.functional.pad(y, (k // 2, k // 2, 0, 0), mode="circular")
-            y = torch.nn.functional.pad(y, (0, 0, k // 2, k // 2), mode="replicate")
-            y = em.net.out_conv(y)
-        return y[:, c]
+    @contextlib.contextmanager
+    def no_final_norm():  # the output head on an already-normalized stream (linear + constant)
+        ln.forward_ctx = lambda t, ctx, prefix: t
+        try:
+            yield
+        finally:
+            del ln.forward_ctx
 
-    def write(contrib):  # (B, N, D) component -> (180, 360) physical tendency, batch mean
+    def head(z):  # (..., D) normalized stream -> channel c of the physical tendency
+        with no_final_norm():
+            return em.net.unembed(z, blank)[:, c].float() * em.res_std[0, c]
+
+    zero = head(torch.zeros_like(r))
+
+    def write(contrib):  # a component's share of the final stream -> (180, 360), batch mean
         z = (contrib - contrib.mean(-1, keepdim=True)) / scale * ln.weight
-        return (decode(z @ W.T).float() * em.res_std[0, c]).mean(0)
+        return (head(z) - zero).mean(0)
 
-    maps = {"embed": write(cache["hook_embed"] + cache["hook_pos_embed"])}
+    maps = {"embed": write(em.net.embed(em.normalize(x), _Ctx(None, None, None)).expand_as(r))}
     b_O = sum(em.net.blocks[i].attn.b_O for i in range(L))
     for i in range(L):
         res = cache[f"blocks.{i}.attn.hook_result"]
         for h in range(em.cfg.heads):
-            maps[f"L{i}H{h}"] = write(res[:, :, h])
+            maps[f"L{i}H{h}"] = write(_head(res, h))
         maps[f"L{i}MLP"] = write(cache[f"blocks.{i}.hook_mlp_out"])
-    const = (ln.bias @ W.T + em.net.head.bias).expand(1, r.shape[1], -1)  # (1, N, C*p*p)
-    const_map = (decode(const).float() * em.res_std[0, c])[0]
-    maps["biases"] = write(b_O.expand_as(r)) + const_map
+    maps["biases"] = write(b_O.expand_as(r)) + head(ln.bias.expand_as(r)).mean(0)
     total = sum(maps.values())
     err = float((total - final[:, c].mean(0)).abs().max())
     mask = np.ones((180, 360), dtype=bool) if mask is None else mask
