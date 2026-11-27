@@ -556,7 +556,8 @@ def decade_section(out: Path) -> str:
             ("v5a + jitter + filter + small-scale damping", "long-v5a-jf-s50t90"),
             ("v6 + jitter + filter", "long-v6-jit-f"), ("v7, no help", "long-v7"), ("v7 + jitter", "long-v7-jit"),
             ("<b>v7 + jitter + filter (seed 0)</b>", "long-v7-jit-f"), ("v7 + jitter + filter (seed 1)", "long-v7-jit-f-seed1"),
-            ("v7 + jitter + filter (seed 2)", "long-v7-jit-f-seed2")]
+            ("v7 + jitter + filter (seed 2)", "long-v7-jit-f-seed2"),
+            ("<b>3D (split heads, rotary) + jitter + filter</b>", "long-f3d-rope-jit-f")]
     rows, series = [], []
     for label, tag in runs:
         f = DRIFT / f"{tag}.npz"
@@ -572,7 +573,8 @@ def decade_section(out: Path) -> str:
             r = z["dd_e"] / z["dd_t"]
             var = f"{min(r[n.index(v)] for v in ('T_0', 'T_3', 'T_7', 'U_3')):.2f}–{max(r[n.index(v)] for v in ('T_0', 'T_3', 'T_7', 'U_3')):.2f}"
         rows.append([label, f"{hold / 365:.1f} y", f"{last[:, t7].mean():+.1f} K", f"{1e3 * last[:, q7].mean():+.2f} g/kg", var or "–"])
-        if tag in ("long-v4f", "long-v5a-jf", "long-v6-jit-f", "long-v7-jit-f", "long-v7-jit-f-seed1", "long-v7-jit-f-seed2"):
+        if tag in ("long-v4f", "long-v5a-jf", "long-v6-jit-f", "long-v7-jit-f", "long-v7-jit-f-seed1", "long-v7-jit-f-seed2",
+                   "long-f3d-rope-jit-f"):
             series.append((label.replace("<b>", "").replace("</b>", ""), np.arange(1, len(d) + 1) / 365, d[:, t7]))
     if not rows:
         return ""
@@ -638,10 +640,17 @@ def threed_section(out: Path) -> str:
         frows = [[f"3D, epoch {e:.1f}"] + f(d) for e, d in sorted(seen.items())]
         frows.append(["<b>v7 (released)</b>"] + f(v7[-1]))
         ev = _eval({"run": "f3d-rope"}, "eval-long-jitter-filter")
-        status = ("Its 2010 evaluation and 10-year run follow the last epoch." if not ev else
-                  f"2010 with jitter + filter: 5-day ACC " + " / ".join(f"{ev['skill'][x]['5d']['acc']:.2f}" for x in ACC_VARS)
-                  + f", climate holds {faithful_days({'run': 'f3d-rope'}, 'eval-long-jitter-filter'):.0f} days.")
-        ft_html = ("<h3>The winner through v7's rollout recipe (in training)</h3><p>The 3D split-head model with rotary "
+        v7e = _eval({"run": "vit7-p4-d384-l8"}, "eval-long-jitter-filter")
+        status = "Its 2010 evaluation and 10-year run follow the last epoch."
+        if ev and v7e:
+            accs = lambda m, L: " / ".join(f"{m['skill'][x][L]['acc']:.2f}" for x in ACC_VARS)  # noqa: E731
+            status = (f"<b>On the 2010 evaluation (8 starts, 4 members, jitter + filter): 5-day anomaly correlation "
+                      f"{accs(ev, '5d')} against v7's {accs(v7e, '5d')}, 10-day {accs(ev, '10d')} against "
+                      f"{accs(v7e, '10d')} (PS / T_7 / U_3 / V_3), the best of any version</b>; the 2010 free run "
+                      f"holds its climate for {faithful_days({'run': 'f3d-rope'}, 'eval-long-jitter-filter'):.0f} days. "
+                      "Its 10-year run (one seed) stays realistic all decade, with a slow drift in the last two years "
+                      "(see <a href='#decade'>Decade runs</a>).")
+        ft_html = ("<h3>The winner through v7's rollout recipe</h3><p>The 3D split-head model with rotary "
                    "positions, fine-tuned for 8 epochs with v7's recipe (noise-conditioned norms, CRPS + spectral energy "
                    "score, 4–24-step rollouts with patch jitter, anti-aliased embedding), on Swing's backfill queue in "
                    f"4-hour links. Validation on 2010, against v7's final numbers. {status}</p>"
