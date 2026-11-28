@@ -1,0 +1,13 @@
+#!/bin/bash
+#PBS -A E3SM
+#PBS -q gpu
+#PBS -N raw-bias
+#PBS -l select=1:ngpus=1
+#PBS -l walltime=01:00:00
+#PBS -j oe
+#PBS -o logs/
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$HOME/vit-interp}"
+R=/lcrc/globalscratch/ac.ngmahfouz/vit-interp/runs
+.venv/bin/python scripts/raw_bias.py --ckpts v8,$R/v9-ctrl/best.pt,$R/v9-fix/best.pt --names v8,v9-ctrl,v9-fix \
+  --years 2010,2011,2012 --out $R/v9-fix/raw_bias.json
