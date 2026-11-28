@@ -983,6 +983,24 @@ def _hold_days(d, n):
     return next((i + 1 for i in range(len(d)) if abs(d[i, t7]) > 2 or abs(d[i, ps]) > 100 or abs(d[i, u3]) > 3), len(d))
 
 
+def _profile_response_html() -> str:
+    p = LAB / "profile_response-v8.json"
+    if not p.exists():
+        return ""
+    r = json.loads(p.read_text())
+    g = {k: [x for x in v["gain"]["mean"]] for k, v in r["variants"].items()}
+    at = lambda k, d: g[k][int(d * 4)]  # noqa: E731
+    rows = [[k if k == "intact" else f"<code>{k}</code> off", *(f"{at(k, d):.2f}" for d in (1, 5, 10, 20, 30, 60))] for k in g]
+    return ("<p><b>Is the drift an instability?</b> No. The drift's vertical pattern (warm top, cool middle; taken from the "
+            "seed-0 run, year 10 minus year 1, rescaled to be energy-neutral) is planted at ±1 K on 16 states of 2010 and run "
+            "60 days in paired rollouts with identical noise (a probe drafted by the GPT reviewer). The table gives how much of "
+            "it remains (1 = none removed):</p>"
+            + _table(["run", "1 day", "5 days", "10 days", "20 days", "30 days", "60 days"], rows)
+            + "<p>v8 damps the pattern with an e-folding time of about three weeks, and no single head changes that by more "
+              "than 0.06. The decade drift is therefore a slowly <i>forced</i> pattern (fed, per the table above, by "
+              "small-scale noise at the model top), not a growing mode.</p>")
+
+
 def inside_v8_section(out: Path) -> str:
     if not LAB.exists():
         return ""
@@ -1309,6 +1327,7 @@ def inside_v8_section(out: Path) -> str:
               "just their small-scale part (what a 30-wavenumber, 2-pass smoother takes out) removes most of the top "
               "warming and keeps E3SM's variability. The drift is fed by small-scale noise accumulating at the model top, where "
               "the atmosphere is thin and dynamical cores usually add extra damping (a sponge layer).</li></ul>"
+            + _profile_response_html()
             + "<p class='muted'>The damping arms run outside the network, like the seam filter "
               "(<code>scripts/long_run.py --damp-small-top</code>). The first v9 fine-tune targets the raw cold bias; the top-level small scales are next.</p>")
 
@@ -1335,6 +1354,178 @@ def inside_v8_section(out: Path) -> str:
             + "<p>v8's surface tokens are the easiest to compress (96% at layer 3, 93% at layer 6); its level-3 tokens sit "
               "close to v2's whole-column tokens (85–91% against 88–93%). Both v8 token kinds lose some variance between "
               "layers 3 and 6, as the vertical heads mix levels into them.</p>")
+    return "".join(parts)
+
+
+# -- Emergent dynamics: physics the emulator was never told about ------------------------------
+
+EMERGE = RUNS / "f3d-rope" / "lab" / "emergent"
+
+
+def _ej(name):
+    p = EMERGE / f"{name}.json"
+    return json.loads(p.read_text()) if p.exists() else None
+
+
+def emergent_section(out: Path) -> str:
+    if not EMERGE.exists():
+        return ""
+    parts = ["<h2 id='emergent'>Emergent dynamics: physics the emulator was never told about</h2>"
+             "<p>The emulator is only ever trained to predict E3SM's next 6-hour state. Does it carry the atmosphere's "
+             "dynamics inside it: waves, balances, responses to heating? Each probe plants an idealized perturbation on "
+             "8 real 2010 states (as a ± pair, so the linear response is isolated), steps the raw network with its noise "
+             "held at zero, and compares the response with a theoretical prediction that the model never saw. Code: "
+             "<code>scripts/emergent.py</code>; probe ideas were developed with two AI reviewers (GPT-6.2 and Gemini 4) "
+             "and every one was run and checked here.</p>"]
+    rows = []
+    adj = {c: _ej(f"adjust-{c}") for c in ("v8", "v2")}
+    gill = {k: _ej(f"gill-{k}") for k in ("v8", "v2", "v8-lat45", "v8-novert")}
+    hyd = {k: _ej(f"hydrostatic-{k}") for k in ("v8", "v2", "v8-novert")}
+    ine = {k: _ej(f"inertial-{k}") for k in ("v8", "v2", "v8-novert")}
+    lam = {c: _ej(f"lamb-{c}") for c in ("v8", "v2")}
+    if gill["v8"]:
+        g = gill["v8"]
+        rows.append(["<b>Matsuno–Gill response</b> to steady equatorial heating (6 days)",
+                     "easterlies east, westerlies west, twin cyclones west, upper flow reversed",
+                     f"<b>yes</b>: U<sub>7</sub> east {g['u7_east_mean']:+.2f} / west {g['u7_west_mean']:+.2f} m/s, "
+                     f"upper–lower correlation {g['corr_U2_U7']:+.2f}, cyclones N and S", "<b>yes</b>"])
+    if adj["v8"]:
+        r = {x["lat"]: x["step1"] for x in adj["v8"]["rows"]}
+        rows.append(["<b>Geostrophic adjustment</b> of a pressure bump",
+                     "balanced part kept grows with |f|; anticyclonic wind, sign flips across the equator",
+                     f"<b>yes</b>: kept {r[0]['ps_kept']:.2f} at 0°, {r[45]['ps_kept']:.2f} at 45°N; wind "
+                     f"{r[45]['vt_ccw']['7']:+.2f} (45°N) / {r[-45]['vt_ccw']['7']:+.2f} m/s (45°S)", "yes"])
+    if hyd["v8"]:
+        rows.append(["<b>Hydrostatic integration</b>: warm one level, which levels' winds respond?",
+                     "only levels above the warming, weighted by layer thickness",
+                     f"shape yes (correlation {hyd['v8']['corr_V']:.2f}, strongest one level above), size "
+                     f"{hyd['v8']['slope_V']:.0%} of inviscid theory, some leakage below", "yes"])
+    if ine["v8"]:
+        r = {x["lat"]: x for x in ine["v8"]["rows"]}
+        rows.append(["<b>Inertial rotation</b> of a zonal wind band",
+                     "turned by −sin(fΔt): about ∓0.8 at ±45°",
+                     f"<b>no</b>: dV/A {r[45]['model']['3']['dV']:+.2f} at 45°N", "no"])
+    if lam["v8"]:
+        s1 = lam["v8"]["steps"]["1"]
+        rows.append(["<b>Lamb pulse</b> (Hunga Tonga-like pressure bump)", "a ring ~6700 km out after 6 h (310 m/s)",
+                     f"<b>no</b>: the bump decays in place ({s1['center_Pa']:.0f} of 200 Pa left), no ring", "no"])
+    parts.append(_table(["probe", "theory says", "v8", "v2 the same?"], rows))
+    parts.append("<p><b>The pattern:</b> the emulator reproduces the <b>slow, balanced</b> atmosphere (the Gill "
+                 "circulation, geostrophic balance, the hydrostatic link between temperature and wind aloft) and damps "
+                 "<b>fast, unbalanced</b> motion (Lamb pulses, inertial oscillations) instead of propagating it. That is "
+                 "what learning from 6-hourly snapshots of a mostly balanced atmosphere should teach. In v8 the two balanced responses "
+                 "tested this way both run through the <b>vertical heads</b>: switch them off and the Gill circulation and "
+                 "the hydrostatic coupling disappear.</p>")
+
+    # Gill figure
+    gz = EMERGE / "gill-v8.npz"
+    if gz.exists():
+        z = np.load(gz)
+        lat, lon, m = z["lat"], z["lon"], z["maps"]
+        nm = list(z["names"])
+        sel = (lat > -40) & (lat < 40)
+        lo = ((lon - 180 + 180) % 360 - 180)
+        o = np.argsort(lo)
+        fig, axs = plt.subplots(1, 2, figsize=(12, 3.8), facecolor=SURF, gridspec_kw={"width_ratios": [1.6, 1]})
+        ax = axs[0]
+        ps = m[nm.index("PS")][sel][:, o]
+        vmax = np.abs(ps).max()
+        im = ax.pcolormesh(lo[o], lat[sel], ps, cmap="RdBu_r", vmin=-vmax, vmax=vmax, shading="auto")
+        u, v = m[nm.index("U_7")][sel][:, o], m[nm.index("V_7")][sel][:, o]
+        ss = (slice(None, None, 4), slice(None, None, 6))
+        ax.quiver(lo[o][ss[1]], lat[sel][ss[0]], u[ss], v[ss], scale=6, width=0.0025, color="#222")
+        th = np.exp(-0.5 * (lo[o] / 12.0) ** 2)[None, :] * np.exp(-0.5 * (lat[sel] / 7.0) ** 2)[:, None]
+        ax.contour(lo[o], lat[sel], th, levels=[0.5], colors=[PALETTE[1]], linewidths=1.6)
+        ax.set_xlim(-120, 120); ax.set_aspect("equal")
+        _style(ax, "v8: low-level wind and surface pressure response, days 3–6")
+        ax.set_xlabel("degrees east of the heating (orange: half-maximum heating)", color=INK2)
+        cb = fig.colorbar(im, ax=ax, shrink=0.8, pad=0.01); cb.set_label("PS (Pa)", fontsize=8.5); cb.ax.tick_params(labelsize=8)
+        ax = axs[1]
+        for i, (k, lab) in enumerate((("v8", "v8"), ("v2", "v2"), ("v8-lat45", "v8, heating at 45°N"),
+                                      ("v8-novert", "v8, vertical heads off"))):
+            g = gill[k]
+            if g:
+                d = np.array(g["dlon"]); oo = np.argsort(d)
+                ax.plot(d[oo], np.array(g["u7_eq"])[oo], color=PALETTE[i], lw=1.6, label=lab)
+        ax.axhline(0, color="#888", lw=0.8); ax.axvline(0, color=PALETTE[1], lw=0.8, ls=":")
+        ax.set_xlim(-150, 150)
+        _style(ax, "low-level zonal wind along the heating's latitude (m/s)")
+        ax.set_xlabel("degrees east of the heating", color=INK2)
+        ax.legend(frameon=False, labelcolor=INK, fontsize=8)
+        fig.savefig(out / "emergent_gill.png"); plt.close(fig)
+        g = gill["v8"]
+        parts.append("<h3 id='emergent-gill'>The Matsuno–Gill response</h3>"
+                     "<p>A steady heating (0.25 K per 6 h at the peak, in the mid-troposphere, 12° × 7°) is added over the "
+                     "equatorial Pacific at every step of 6-day paired rollouts (true forcings, prescribed ocean "
+                     "temperature) from 8 starts in winter and summer 2010. Gill (1980) predicts low-level winds "
+                     "converging on the heating, easterlies reaching far east (a Kelvin wave) and westerlies to the west "
+                     "flanked by twin cyclones (Rossby waves), and upper-level winds reversed against the lower ones.</p>"
+                     + _img("emergent_gill.png", "Gill response in v8")
+                     + f"<p>v8 does all of it: low-level easterlies east of the heating ({g['u7_east_mean']:+.2f} m/s), "
+                       f"westerlies west ({g['u7_west_mean']:+.2f} m/s), cyclones on both sides of the equator to the west, "
+                       f"and an upper flow reversed against the lower (correlation {g['corr_U2_U7']:+.2f}). The eastern "
+                       "response reaches farther than Gill's 3:1, and the western one decays within about 14°. The same "
+                       "heating at 45°N gives none of this, and with its vertical heads off v8 does not respond at "
+                       "all: the heating never reaches the winds.</p>")
+
+    # geostrophic adjustment figure
+    if adj["v8"]:
+        fig, axs = plt.subplots(1, 2, figsize=(10, 3.4), facecolor=SURF)
+        for i, c in enumerate(("v8", "v2")):
+            if not adj[c]:
+                continue
+            la = [x["lat"] for x in adj[c]["rows"]]
+            axs[0].plot(la, [x["step1"]["ps_kept"] for x in adj[c]["rows"]], "-o", ms=3.5, color=PALETTE[i], label=c)
+            axs[1].plot(la, [x["step1"]["vt_ccw"]["7"] for x in adj[c]["rows"]], "-o", ms=3.5, color=PALETTE[i], label=c)
+        _style(axs[0], "pressure kept at the centre after 6 h (fraction)")
+        _style(axs[1], "counter-clockwise wind around the high, level 7 (m/s)")
+        for ax in axs:
+            ax.set_xlabel("latitude of the bump", color=INK2); ax.axvline(0, color="#888", lw=0.8)
+        axs[1].axhline(0, color="#888", lw=0.8)
+        axs[0].legend(frameon=False, labelcolor=INK)
+        fig.savefig(out / "emergent_adjust.png"); plt.close(fig)
+        parts.append("<h3 id='emergent-adjust'>Geostrophic adjustment</h3>"
+                     "<p>A 200 Pa surface-pressure bump (600 km) is planted at 11 latitudes over open ocean. Only the "
+                     "balanced part of an unbalanced bump survives adjustment, and it grows as the deformation radius "
+                     "shrinks with latitude; the wind it leaves behind circles the high anticyclonically: clockwise in the "
+                     "north, counter-clockwise in the south, and not at all on the equator.</p>"
+                     + _img("emergent_adjust.png", "geostrophic adjustment vs latitude")
+                     + "<p>Both models keep more of the bump the farther from the equator, almost symmetrically, and spin "
+                       "up anticyclonic winds whose sign flips at the equator, which no training target states.</p>")
+
+    # hydrostatic figure
+    if hyd["v8"]:
+        mats = [("theory (inviscid)", hyd["v8"], "theory_V"), ("v8", hyd["v8"], "model_V")]
+        if hyd["v8-novert"]:
+            mats.append(("v8, vertical heads off", hyd["v8-novert"], "model_V"))
+        fig, axs = plt.subplots(1, len(mats), figsize=(3.4 * len(mats) + 0.6, 3.4), facecolor=SURF)
+        for ax, (lab, r, key) in zip(np.atleast_1d(axs), mats):
+            M = np.abs(np.array(r[key]["re"]) + 1j * np.array(r[key]["im"]))
+            ax.imshow(M / max(M.max(), 1e-12), cmap="viridis", vmin=0, vmax=1)
+            ax.set_title(f"{lab}\n(max {M.max():.2g} m/s)", fontsize=9.5, color=INK)
+            ax.set_xlabel("warmed level", fontsize=8.5, color=INK2); ax.set_xticks(range(8)); ax.set_yticks(range(8))
+            ax.tick_params(labelsize=7.5)
+        np.atleast_1d(axs)[0].set_ylabel("responding level (V)", fontsize=8.5, color=INK2)
+        fig.savefig(out / "emergent_hydrostatic.png"); plt.close(fig)
+        parts.append("<h3 id='emergent-hydrostatic'>Hydrostatic integration</h3>"
+                     "<p>One level is warmed by a 1 K wave (wavenumber 4, at 45°N), nothing else changed. Geopotential is "
+                     "not one of the model's variables, so to accelerate the winds correctly it has to add temperature up "
+                     "from below: theory gives a response only at and above the warmed level (level 0 is the top), "
+                     "weighted by layer thickness. Each panel is scaled to its own maximum.</p>"
+                     + _img("emergent_hydrostatic.png", "hydrostatic response matrices")
+                     + f"<p>v8's response has the hydrostatic shape (correlation {hyd['v8']['corr_V']:.2f}; strongest one "
+                       f"level above the warming) at {hyd['v8']['slope_V']:.0%} of the inviscid size, with some leakage "
+                       "below, where theory says nothing should move. With the vertical heads "
+                       "switched off only the warmed level itself responds: the heads carry the hydrostatic coupling.</p>")
+    if ine["v8"] or lam["v8"]:
+        parts.append("<h3 id='emergent-fast'>Fast, unbalanced motion is damped, not propagated</h3>"
+                     "<p><b>Lamb pulse.</b> A 200 Pa bump should leave as a ring at 310 m/s (6700 km after one step, as after "
+                     "the 2022 Hunga Tonga eruption). Both models instead let it decay where it is and smear outward over "
+                     "about 2500 km. <b>Inertial rotation.</b> A zonal wind band with no pressure gradient to balance it "
+                     "should turn by −sin(fΔt) in 6 h; intact v8 leaves it almost untouched. With its vertical heads "
+                     "switched off, v8 does turn it, with the right sign in each hemisphere, at about 20% of theory: "
+                     "a Coriolis term seems to live in the horizontal machinery, and the vertical heads cancel it for this "
+                     "unbalanced input (not yet understood).</p>")
     return "".join(parts)
 
 
@@ -1433,7 +1624,7 @@ def build(out: Path) -> None:
                 f'<div class="muted">{"then drifts" if m.get("blowup") else "stable"}</div></div></div>')
     nbs = notebooks_html(out)
     nb_list = "".join(f'<li><a href="{h}">{s}</a>: {html.escape(NB_TITLES.get(s, ""))}</li>' for s, h in nbs)
-    body = f"""<nav class="muted"><a href="#architecture">Architecture</a><a href="training.html">Training</a><a href="#versions">Versions</a><a href="#stability">Stability</a><a href="#decade">Decade runs</a><a href="#threed">3D model</a><a href="#rossby">Rossby waves</a><a href="#circuits">Circuits</a><a href="#inside-v8">Inside v8</a><a href="#notebooks">Notebooks</a></nav>
+    body = f"""<nav class="muted"><a href="#architecture">Architecture</a><a href="training.html">Training</a><a href="#versions">Versions</a><a href="#stability">Stability</a><a href="#decade">Decade runs</a><a href="#threed">3D model</a><a href="#rossby">Rossby waves</a><a href="#circuits">Circuits</a><a href="#inside-v8">Inside v8</a><a href="#emergent">Emergent dynamics</a><a href="#notebooks">Notebooks</a></nav>
 <h1>Inside a ViT emulator of E3SM</h1>
 <p class="lede">A close-to-vanilla Vision Transformer that steps E3SMv3 (1°, AMIP) forward 6 hours, built to be taken apart for the
 interpretability hackathon: attention heads, circuits (Vi-CD) and physical laws (LAWFUL), with <a href="https://github.com/mahf708/exege">exege</a>. Checkpoints and latent archives are on Hugging Face:
@@ -1459,6 +1650,7 @@ column is the older, laxer criterion (global near-surface temperature off by mor
 {analysis_sections(out, analysed)}
 {rossby_versions(out)}
 {inside_v8_section(out)}
+{emergent_section(out)}
 <h2 id="notebooks">Hackathon notebooks (00–07 executed on {current["v"]["name"]}, 08 on v8)</h2><ul>{nb_list}</ul>
 <p class="muted">Run them on Swing: <code>HACKATHON.md</code> in the vit-interp repository; the exege layers are on the
 <code>mahf708/circuits</code> branch of exege.</p>"""
