@@ -1,0 +1,35 @@
+#!/bin/bash
+# v9: continue the released v8 with v8's own rollout recipe, changing only what an arm sets.
+#   qsub -v RUN=v9-ctrl scripts/train_v9.pbs                                   (control: v8 recipe, resume fix only)
+#   qsub -v RUN=v9-fix,EXTRA="--raw-bias-weight 10 --prescribe-ocean-ts --crps-area-weighted" scripts/train_v9.pbs
+# Resubmit with the same variables to continue from latest.pt.
+#PBS -A E3SM
+#PBS -q backfill
+#PBS -N v9
+#PBS -l select=1:ngpus=4
+#PBS -l walltime=04:00:00
+#PBS -j oe
+#PBS -o logs/
+set -euo pipefail
+cd "$(realpath "${PBS_O_WORKDIR:-$HOME/vit-interp}")"
+ROOT=/lcrc/globalscratch/ac.ngmahfouz/vit-interp
+export RUN=${RUN:?set RUN} INIT=${INIT:-$ROOT/runs/vit-p4-d384-l8/release/v8.pt} RECIPE=$ROOT/runs/f3d-rope/long/args.json
+export OUTDIR=$ROOT/runs/$RUN LR=${LR:-2e-5} EPOCHS=${EPOCHS:-2} EXTRA=${EXTRA:-}
+export OMP_NUM_THREADS=4
+mkdir -p "$OUTDIR"
+.venv/bin/python - <<'PY'
+import json, os, shlex, sys
+args = json.load(open(os.environ["RECIPE"]))
+assert args["arch"] == "vit3d" and args["pos3d"] == "rope"
+args.update(out=os.environ["OUTDIR"], init=os.environ["INIT"], select="last", lr=float(os.environ["LR"]),
+            warmup=200, epochs=int(os.environ["EPOCHS"]), walltime_min=205.0, save_every_min=30.0)
+cmd = [sys.executable, "-m", "torch.distributed.run", "--standalone", "--nproc-per-node", "4", "-m", "vit_interp.train"]
+for k, v in args.items():
+    if v is True:
+        cmd.append("--" + k.replace("_", "-"))
+    elif v is not None and v is not False:
+        cmd += ["--" + k.replace("_", "-"), str(v)]
+cmd += shlex.split(os.environ["EXTRA"])
+print("launch:", " ".join(cmd), flush=True)
+os.execv(sys.executable, cmd)
+PY

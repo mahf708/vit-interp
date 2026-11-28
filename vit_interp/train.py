@@ -38,6 +38,26 @@ from .data import ALL_NAMES, DATA_ROOT, N_ALL, N_PROG, PROG_NAMES, Stats, Trajec
 from .emulator import Emulator
 from .model import ViTConfig
 
+
+class _SkipSampler(torch.utils.data.Sampler):
+    """Wraps a DistributedSampler and drops its first ``n`` indices (then resets), so a run resumed
+    mid-epoch continues that epoch's permutation where it stopped instead of replaying its start."""
+
+    def __init__(self, base):
+        self.base, self.n = base, 0
+
+    def __iter__(self):
+        import itertools
+
+        n, self.n = self.n, 0
+        return itertools.islice(iter(self.base), n, None)
+
+    def __len__(self):
+        return len(self.base)
+
+    def set_epoch(self, epoch):
+        self.base.set_epoch(epoch)
+
 REPORT = ["PS", "TS", "T_7", "T_3", "U_3", "V_3", "U_6", "specific_total_water_7"]
 
 
@@ -123,6 +143,13 @@ def main():
     p.add_argument("--energy-weight", type=float, default=0.0,
                    help="ACE adds 0.1 x a spectral energy score; off by default (CRPS alone)")
     p.add_argument("--crps-alpha", type=float, default=1.0, help="1: fair CRPS; <1: almost fair")
+    p.add_argument("--crps-area-weighted", action="store_true",
+                   help="area-weight the CRPS (ACE's is a plain grid mean, which overweights polar cells)")
+    p.add_argument("--raw-bias-weight", type=float, default=0.0,
+                   help="v9: penalize the network's raw (pre-corrector) global-mean T and water tendency bias per "
+                        "level, averaged over the batch and members before squaring (0: off)")
+    p.add_argument("--prescribe-ocean-ts", action="store_true",
+                   help="in rollouts, overwrite ocean TS with the truth before the next step (as free runs do)")
     a = p.parse_args()
     t_start = time.time()
 
@@ -171,7 +198,7 @@ def main():
         from .ensemble import EnsembleLoss
 
         ens_loss = EnsembleLoss(meta["lat"], len(meta["lon"]), a.crps_weight, a.energy_weight,
-                                a.crps_alpha).to(dev)
+                                a.crps_alpha, area_weights=em.area_w[0, 0] if a.crps_area_weighted else None).to(dev)
         log(f"ensemble loss: {a.n_ensemble} members, crps {a.crps_weight}, energy {a.energy_weight}")
     n_ens = a.n_ensemble if ens_loss is not None else 1
     log(f"params: {sum(p.numel() for p in em.net.parameters()) / 1e6:.2f} M, tokens {cfg.n_tokens}")
@@ -180,7 +207,10 @@ def main():
     val = Trajectories(years(a.val_years), 1, a.data, stride=a.val_stride)
     roll = Trajectories(years(a.val_years), a.rollout_steps, a.data, stride=4 * 15)  # a 5-day rollout every 15 days
     sampler = DistributedSampler(train, world, rank, shuffle=True, drop_last=True) if ddp else None
-    dl = DataLoader(train, a.batch, sampler=sampler, shuffle=sampler is None, num_workers=a.workers,
+    skip = None
+    if sampler is not None:
+        skip = _SkipSampler(sampler)
+    dl = DataLoader(train, a.batch, sampler=skip, shuffle=sampler is None, num_workers=a.workers,
                     pin_memory=True, drop_last=True, persistent_workers=True, prefetch_factor=a.prefetch)
     steps_per_epoch = len(dl)
     total = a.epochs * steps_per_epoch
@@ -229,6 +259,22 @@ def main():
         jitter = PatchJitter(cfg.patch, a.train_jitter, seed=1000 + rank)
         log(f"patch jitter in training: {a.train_jitter}")
 
+    last_raw: dict = {}  # the uncorrected next state of the latest predict (for --raw-bias-weight)
+    bias_idx = [i for i, nm in enumerate(PROG_NAMES) if nm.startswith(("T_", "specific_total_water_"))]
+    from .evaluate import _prescribe
+
+    def raw_bias_loss(x, truth_now, truth_next):
+        """Squared global-mean (area-weighted, over batch and members) error of the raw, uncorrected
+        tendency of T and water at each level, in units of the residual std."""
+        raw_tend = last_raw["nxt"][:, bias_idx].float() - x[:, bias_idx].float()
+        tru_tend = members(truth_next)[:, bias_idx] - members(truth_now)[:, bias_idx]
+        e = (raw_tend - tru_tend) / em.res_std[:, bias_idx]
+        b = (e * em.area_w).mean((-2, -1)).mean(0)  # (levels,) signed, averaged before squaring
+        if ddp:
+            from torch.distributed.nn.functional import all_reduce
+            b = all_reduce(b) / world
+        return b.square().mean()
+
     def predict(x, ref=None, forcing_next=None):
         """physical (B, 39, H, W) -> (next prog physical, normalized output, ref dry mass).
         The output is corrected (if a corrector is attached) and re-normalized."""
@@ -236,6 +282,7 @@ def main():
             xn = em.normalize(x)
             d = jitter(fwd, xn) if (jitter is not None and em.training) else fwd(xn)
         nxt, diag = em.physical(x, d)
+        last_raw["nxt"] = nxt
         if em.corrector is not None:
             nxt, diag, ref = em.corrector(x[:, :N_ALL], nxt, diag, ref, forcing_next)
             d = em.normalized(x, nxt, diag)
@@ -274,14 +321,20 @@ def main():
             if last_only and t < n - 1:
                 with torch.no_grad():
                     state, d, ref = predict(x, ref, tr[:, t + 1, N_PROG:N_ALL])
+                    if a.prescribe_ocean_ts:
+                        state = _prescribe(state, tr[:, t + 1])
                 continue
             state, d, ref = predict(x, ref, tr[:, t + 1, N_PROG:N_ALL])
+            if a.raw_bias_weight:
+                loss = loss + a.raw_bias_weight * raw_bias_loss(x, traj[:, t, :N_PROG], traj[:, t + 1, :N_PROG])
             if ens:
                 gen = ens_gen(state, d, traj[:, t])
                 tgt = target_of(traj[:, t], traj[:, t + 1])[:, None]
                 loss = loss + ens_loss(gen, tgt)[0]
             else:
                 loss = loss + ((d - target_of(x, tr[:, t + 1])) ** 2 * em.area_w).mean()
+            if a.prescribe_ocean_ts and t < n - 1:  # scored on its own TS, stepped on with the ocean's
+                state = _prescribe(state.clone(), tr[:, t + 1])
         return loss if last_only else loss / n
 
     def em_state(use_ema: bool):
@@ -380,6 +433,11 @@ def main():
     while epoch < a.epochs and not stop:
         if sampler is not None:
             sampler.set_epoch(epoch)
+        done = step - epoch * steps_per_epoch  # > 0 when resuming a part-done epoch
+        if sampler is not None:
+            skip.n = max(done, 0) * a.batch  # resume where the epoch stopped instead of replaying its start
+        elif done > 0:
+            log(f"resuming a part-done epoch without a DistributedSampler: its order is not reproducible")
         for traj in dl:
             traj = traj.to(dev, non_blocking=True)
             n_this = a.n_steps

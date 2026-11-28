@@ -1,0 +1,13 @@
+#!/bin/bash
+# qsub -q backfill -v TAG=v8,ARGS="--n-starts 16 --days 90 --ablate L7H3:L0H5" scripts/profile_response.pbs
+#PBS -A E3SM
+#PBS -q gpu
+#PBS -N v8-resp
+#PBS -l select=1:ngpus=1
+#PBS -l walltime=04:00:00
+#PBS -j oe
+#PBS -o logs/
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$HOME/vit-interp}"
+.venv/bin/python scripts/profile_response.py ${ARGS//:/,} \
+  --out /lcrc/globalscratch/ac.ngmahfouz/vit-interp/runs/f3d-rope/lab/profile_response-${TAG}.json
