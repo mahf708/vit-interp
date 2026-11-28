@@ -44,7 +44,7 @@ class PatchJitter:
 
     Every step injects patch-period noise at the same phase, so it adds coherently and grows.
     Running each step on the input shifted by ``(oy, ox)`` pixels (``cycle16``: all 16 offsets of a
-    4×4 patch in turn) puts each step's seam pattern at a different phase, so it cancels instead.
+    4×4 patch in turn; ``cycle16d``: the same, not locked to the time of day) puts each step's seam pattern at a different phase, so it cancels instead.
     Longitude shifts are exact (periodic roll); latitude shifts replicate the polar rows. The
     network itself never changes: ``jitter(net_fn, x)`` shifts ``x``, calls ``net_fn``, and shifts
     the output back."""
@@ -58,6 +58,11 @@ class PatchJitter:
         self.t += 1
         if self.mode == "cycle16":
             return (t // p) % p, t % p
+        if self.mode == "cycle16d":
+            # cycle16 with the axes swapped: with 6-h steps (4 a day) cycle16's longitude offset t % 4 is
+            # locked to the UTC hour, so the diurnal cycle always meets the same seam phase. Here the
+            # longitude offset advances once a day and the latitude offset follows the hour.
+            return t % p, (t // p) % p
         if self.mode == "lon":
             return 0, t % p
         return int(self.rng.integers(0, p)), int(self.rng.integers(0, p))

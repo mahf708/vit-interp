@@ -49,7 +49,7 @@ def main():
                    help="components to mean-ablate at every step, e.g. L7H3,L6MLP (an intervention test)")
     p.add_argument("--ablate-scale", type=float, default=0.0,
                    help="keep this fraction of the ablated components' spatial pattern (0 = full mean-ablation)")
-    p.add_argument("--jitter", default="", help="patch jitter mode: cycle16, lon, random")
+    p.add_argument("--jitter", default="", help="patch jitter mode: cycle16, cycle16d, lon, random")
     p.add_argument("--out", required=True)
     a = p.parse_args()
     torch.manual_seed(a.seed)
@@ -122,10 +122,16 @@ def main():
     g_e, g_t, maxerr, k90 = [], [], [], []
     mon_maps, acc, nacc = [], None, 0
     state, t0, k, blow = None, time.time(), 0, None
+    last_forcing = None
     for y in range(y0, y1 + 1):
         arr = np.load(Path(a.data) / f"{y}.npy", mmap_mode="r")
         if state is None:
             state = _to(dev, arr[0][None, :N_PROG])
+        elif last_forcing is not None:
+            # step across the year boundary (Dec 31 18Z -> Jan 1 00Z) so no 6-h step is skipped
+            state = step(state, last_forcing, _to(dev, arr[0][None, N_PROG:N_ALL]))
+            state = _prescribe(state, _to(dev, arr[0][None, :N_ALL])) if a.prescribe != "nonland" else state
+            k += 1
         n = arr.shape[0] - 1
         for t in range(n):
             forcing = _to(dev, arr[t][None, N_PROG:N_ALL])
@@ -168,6 +174,7 @@ def main():
                 mon_maps.append((acc / nacc).float().cpu().numpy().astype(np.float16)); acc, nacc = None, 0
         if blow:
             break
+        last_forcing = _to(dev, arr[n][None, N_PROG:N_ALL])
         # the next year's file starts where this one ends: keep the emulated state
         ge = g_e[-1] - g_t[-1]
         print(f"{y} done ({k} steps, {(time.time() - t0) / k:.3f} s/step): global T_7 {ge[PROG_NAMES.index('T_7')]:+.2f} K, "

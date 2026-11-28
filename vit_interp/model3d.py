@@ -235,7 +235,7 @@ class ViT3D(ViT):
         r = self.ln_final.forward_ctx(r, ctx, "ln_final")
         t_atm = self.head_atm(r[:, :N_LEV])  # (B, 8, N, 4 p p)
         t_surf = self.head_surf(r[:, N_LEV])  # (B, N, (2 + n_diag) p p)
-        ctx("hook_out_tokens", t_surf)
+        t_surf = ctx("hook_out_tokens", t_surf)  # surface output tokens (hookable)
         y_atm = self.unpatchify(t_atm.flatten(0, 1), ATM_VARS).view(B, N_LEV, ATM_VARS, *self.cfg.img_size)
         y_surf = self.unpatchify(t_surf, len(self.surf_out) + self.n_diag)
         y = y_surf.new_zeros(B, self.cfg.out_chans, *self.cfg.img_size)
