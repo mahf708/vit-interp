@@ -1367,6 +1367,17 @@ def _ej(name):
     return json.loads(p.read_text()) if p.exists() else None
 
 
+def _bc_growth(v):
+    a = np.sqrt(np.array(v["E"]) / v["E"][0])
+    i = int(np.argmin(a[:12]))
+    return float(a[i]), i / 4.0, float(np.log(a[-1] / a[i]) / ((len(a) - 1 - i) / 4.0))
+
+
+def _hyd_split(r):
+    M = np.abs(np.array(r["model_V"]["re"]) + 1j * np.array(r["model_V"]["im"]))
+    return float(np.triu(M, 1).sum()), float(np.tril(M, -1).sum()), float(np.trace(M))
+
+
 def emergent_section(out: Path) -> str:
     if not EMERGE.exists():
         return ""
@@ -1396,10 +1407,11 @@ def emergent_section(out: Path) -> str:
                      f"<b>yes</b>: kept {r[0]['ps_kept']:.2f} at 0°, {r[45]['ps_kept']:.2f} at 45°N; wind "
                      f"{r[45]['vt_ccw']['7']:+.2f} (45°N) / {r[-45]['vt_ccw']['7']:+.2f} m/s (45°S)", "yes"])
     if hyd["v8"]:
+        up, lo, dg = _hyd_split(hyd["v8"])
         rows.append(["<b>Hydrostatic integration</b>: warm one level, which levels' winds respond?",
-                     "only levels above the warming, weighted by layer thickness",
-                     f"shape yes (correlation {hyd['v8']['corr_V']:.2f}, strongest one level above), size "
-                     f"{hyd['v8']['slope_V']:.0%} of inviscid theory, some leakage below", "yes"])
+                     "at and above the warming only, weighted by layer thickness",
+                     f"<b>no</b>: the neighbouring levels respond, as much below as above (summed {up:.1f} vs {lo:.1f} m/s, "
+                     f"{dg:.1f} at the warmed level), ~{hyd['v8']['slope_V']:.0%} of the inviscid size", "no"])
     if ine["v8"]:
         r = {x["lat"]: x for x in ine["v8"]["rows"]}
         rows.append(["<b>Inertial rotation</b> of a zonal wind band",
@@ -1409,13 +1421,36 @@ def emergent_section(out: Path) -> str:
         s1 = lam["v8"]["steps"]["1"]
         rows.append(["<b>Lamb pulse</b> (Hunga Tonga-like pressure bump)", "a ring ~6700 km out after 6 h (310 m/s)",
                      f"<b>no</b>: the bump decays in place ({s1['center_Pa']:.0f} of 200 Pa left), no ring", "no"])
+    bal = {c: _ej(f"balance-{c}") for c in ("v8", "v2")}
+    kel = {k: _ej(f"kelvin-{k}") for k in ("v8", "v2", "v8-novert")}
+    bar = {k: _ej(f"baroclinic-{k}") for k in ("v8", "v2", "v8-novert")}
+    inec = _ej("inertial-v8-clampvert")
+    if bal["v8"]:
+        b = bal["v8"]["rows"]
+        rows.insert(1, ["<b>Balanced vs unbalanced</b> vortex, same size (600–2400 km)",
+                        "the balanced vortex survives; the bare pressure bump adjusts away",
+                        f"<b>yes</b>: pressure kept {min(r['balanced']['ps_kept'] for r in b):.2f}–{max(r['balanced']['ps_kept'] for r in b):.2f} "
+                        f"balanced vs {min(r['ps_only']['ps_kept'] for r in b):.2f}–{max(r['ps_only']['ps_kept'] for r in b):.2f} bare", "yes"])
+    if kel["v8"]:
+        k8 = kel["v8"]["variants"]
+        rows.insert(2, ["<b>Equatorial Kelvin wave</b> (4 days)", "eastward at 15–45 m/s; the wrongly polarized wave does not propagate",
+                        f"<b>yes</b>: {k8['kelvin']['phase_speed_m_s']:+.0f} m/s; anti-Kelvin {k8['anti']['phase_speed_m_s']:+.1f} m/s",
+                        f"yes ({kel['v2']['variants']['kelvin']['phase_speed_m_s']:+.0f} m/s)" if kel["v2"] else "–"])
+    if bar["v8"]:
+        b8 = bar["v8"]["variants"]
+        rows.insert(3, ["<b>Baroclinic growth</b> (4 days)", "a wave tilted westward with height grows, an eastward-tilted one decays",
+                        f"<b>yes</b>: after ~2 days of adjustment the westward-tilted wave grows at "
+                        f"{_bc_growth(b8['west'])[2]:.2f}/day, an untilted one tilts westward and grows at "
+                        f"{_bc_growth(b8['none'])[2]:.2f}/day (Eady: ~0.4–0.6), the eastward-tilted one at "
+                        f"{_bc_growth(b8['east'])[2]:.2f}/day", "yes (weaker)"])
     parts.append(_table(["probe", "theory says", "v8", "v2 the same?"], rows))
     parts.append("<p><b>The pattern:</b> the emulator reproduces the <b>slow, balanced</b> atmosphere (the Gill "
-                 "circulation, geostrophic balance, the hydrostatic link between temperature and wind aloft) and damps "
+                 "circulation, geostrophic balance, Kelvin waves, baroclinic growth) and damps "
                  "<b>fast, unbalanced</b> motion (Lamb pulses, inertial oscillations) instead of propagating it. That is "
-                 "what learning from 6-hourly snapshots of a mostly balanced atmosphere should teach. In v8 the two balanced responses "
-                 "tested this way both run through the <b>vertical heads</b>: switch them off and the Gill circulation and "
-                 "the hydrostatic coupling disappear.</p>")
+                 "what learning from 6-hourly snapshots of a mostly balanced atmosphere should teach. One thing it does not do "
+                 "is integrate a single warmed layer upward as hydrostatics requires. In v8 every multi-level response "
+                 "runs through the <b>vertical heads</b>: switch them off and the Gill circulation, the Kelvin wave and "
+                 "baroclinic growth all disappear.</p>")
 
     # Gill figure
     gz = EMERGE / "gill-v8.npz"
@@ -1426,7 +1461,7 @@ def emergent_section(out: Path) -> str:
         sel = (lat > -40) & (lat < 40)
         lo = ((lon - 180 + 180) % 360 - 180)
         o = np.argsort(lo)
-        fig, axs = plt.subplots(1, 2, figsize=(12, 3.8), facecolor=SURF, gridspec_kw={"width_ratios": [1.6, 1]})
+        fig, axs = plt.subplots(1, 2, figsize=(13, 4.2), facecolor=SURF, gridspec_kw={"width_ratios": [1.5, 1]})
         ax = axs[0]
         ps = m[nm.index("PS")][sel][:, o]
         vmax = np.abs(ps).max()
@@ -1436,10 +1471,10 @@ def emergent_section(out: Path) -> str:
         ax.quiver(lo[o][ss[1]], lat[sel][ss[0]], u[ss], v[ss], scale=6, width=0.0025, color="#222")
         th = np.exp(-0.5 * (lo[o] / 12.0) ** 2)[None, :] * np.exp(-0.5 * (lat[sel] / 7.0) ** 2)[:, None]
         ax.contour(lo[o], lat[sel], th, levels=[0.5], colors=[PALETTE[1]], linewidths=1.6)
-        ax.set_xlim(-120, 120); ax.set_aspect("equal")
-        _style(ax, "v8: low-level wind and surface pressure response, days 3–6")
-        ax.set_xlabel("degrees east of the heating (orange: half-maximum heating)", color=INK2)
-        cb = fig.colorbar(im, ax=ax, shrink=0.8, pad=0.01); cb.set_label("PS (Pa)", fontsize=8.5); cb.ax.tick_params(labelsize=8)
+        ax.set_xlim(-120, 120)
+        _style(ax, "v8, days 3–6: low-level wind and PS (Pa)")
+        ax.set_xlabel("degrees east of the heating (orange: heating)", color=INK2)
+        cb = fig.colorbar(im, ax=ax, shrink=0.85, pad=0.015); cb.set_label("PS (Pa)", fontsize=8.5); cb.ax.tick_params(labelsize=8)
         ax = axs[1]
         for i, (k, lab) in enumerate((("v8", "v8"), ("v2", "v2"), ("v8-lat45", "v8, heating at 45°N"),
                                       ("v8-novert", "v8, vertical heads off"))):
@@ -1513,19 +1548,124 @@ def emergent_section(out: Path) -> str:
                      "from below: theory gives a response only at and above the warmed level (level 0 is the top), "
                      "weighted by layer thickness. Each panel is scaled to its own maximum.</p>"
                      + _img("emergent_hydrostatic.png", "hydrostatic response matrices")
-                     + f"<p>v8's response has the hydrostatic shape (correlation {hyd['v8']['corr_V']:.2f}; strongest one "
-                       f"level above the warming) at {hyd['v8']['slope_V']:.0%} of the inviscid size, with some leakage "
-                       "below, where theory says nothing should move. With the vertical heads "
-                       "switched off only the warmed level itself responds: the heads carry the hydrostatic coupling.</p>")
+                     + "<p><b>Not hydrostatic.</b> v8 spreads the response to the neighbouring levels, as much below the "
+                       f"warmed level as above it (summed {_hyd_split(hyd['v8'])[0]:.1f} vs {_hyd_split(hyd['v8'])[1]:.1f} m/s, "
+                       f"{_hyd_split(hyd['v8'])[2]:.1f} at the warmed level itself), at a few percent of the inviscid size; the "
+                       f"correlation with theory ({hyd['v8']['corr_V']:.2f}) comes from the levels above. v2 is the same. "
+                       "A single warmed layer with nothing else changed never occurs in the training data (real anomalies "
+                       "are deep), and the model answers with a vertically smooth response instead of an upward integral. "
+                       "With the vertical heads off only the warmed level responds: they carry all of the vertical spreading.</p>")
+    if bal["v8"]:
+        fig, ax = plt.subplots(figsize=(7.5, 3.6), facecolor=SURF)
+        for i, c in enumerate(("v8", "v2")):
+            if not bal[c]:
+                continue
+            for j, la in enumerate((30.0, 45.0, -45.0)):
+                rr = [r for r in bal[c]["rows"] if r["lat"] == la]
+                w = [r["width_km"] for r in rr]
+                ls = ("-", "--", ":")[j]
+                ax.plot(w, [r["balanced"]["ps_kept"] for r in rr], ls, marker="o", ms=3.5, color=PALETTE[i],
+                        label=f"{c} balanced" if j == 0 else None)
+                ax.plot(w, [r["ps_only"]["ps_kept"] for r in rr], ls, marker="s", ms=3.5, color=PALETTE[i], alpha=0.45,
+                        label=f"{c} pressure only" if j == 0 else None)
+        ax.set_xscale("log"); ax.set_xticks([600, 1200, 2400]); ax.set_xticklabels(["600", "1200", "2400"])
+        _style(ax, "pressure kept at the centre after 6 h (solid 30°N, dashed 45°N, dotted 45°S)")
+        ax.set_xlabel("vortex width (km)", color=INK2); ax.set_ylim(0, 1)
+        ax.legend(frameon=False, labelcolor=INK, fontsize=8.5, loc="lower right")
+        fig.savefig(out / "emergent_balance.png"); plt.close(fig)
+        parts.append("<h3 id='emergent-balance'>Learned balance, not smoothing</h3>"
+                     "<p>Two perturbations of the same size: a bare surface-pressure bump, and the same bump with the "
+                     "geostrophic wind that balances it at every level. A model that merely smooths would treat them alike; "
+                     "a model that has learned balance keeps the balanced one.</p>"
+                     + _img("emergent_balance.png", "balanced vs pressure-only vortex")
+                     + "<p>At every width and latitude the balanced vortex keeps far more of its pressure (and 77–90% of its "
+                       "wind). The bare bump keeps more as it widens, as adjustment theory says it should; the amount it keeps "
+                       "(0.4–0.6 at 600 km in mid-latitudes) matches adjustment with the first <i>baroclinic</i> deformation "
+                       "radius (~500 km), not the external one, which would keep only a few percent: the model treats a "
+                       "pressure bump as a weather system, not as a Lamb disturbance.</p>")
+    if kel["v8"]:
+        fig, axs = plt.subplots(1, 2, figsize=(10, 3.6), facecolor=SURF)
+        for i, (k, lab) in enumerate((("v8", "v8"), ("v2", "v2"), ("v8-novert", "v8, vertical heads off"))):
+            if not kel[k]:
+                continue
+            for var, ls in (("kelvin", "-"), ("anti", "--")):
+                v = kel[k]["variants"][var]
+                t = np.arange(len(v["phase"])) / 4.0
+                ph = np.array(v["phase"]) - v["phase"][0]
+                axs[0].plot(t, -np.rad2deg(ph) / kel[k]["s"], ls, color=PALETTE[i], lw=1.5,
+                            label=f"{lab}, {'Kelvin' if var == 'kelvin' else 'anti-Kelvin'}")
+                axs[1].plot(t, np.array(v["amp"]) / v["amp"][0], ls, color=PALETTE[i], lw=1.5)
+        tt = np.linspace(0, 4, 5)
+        for c, a in ((15, 0.35), (45, 0.35)):
+            axs[0].plot(tt, np.rad2deg(c * tt * 86400 / 6371.0e3), color="#888", lw=0.9, ls=":", alpha=1)
+        _style(axs[0], "eastward displacement (degrees)")
+        _style(axs[1], "amplitude kept")
+        for ax in axs:
+            ax.set_xlabel("days", color=INK2)
+        axs[0].legend(frameon=False, labelcolor=INK, fontsize=7.5, loc="upper left")
+        fig.savefig(out / "emergent_kelvin.png"); plt.close(fig)
+        k8 = kel["v8"]["variants"]
+        parts.append("<h3 id='emergent-kelvin'>An equatorial Kelvin wave</h3>"
+                     "<p>A first-baroclinic Kelvin wave (zonal wavenumber 2, trapped within ~10° of the equator, no "
+                     "meridional wind, temperature and surface pressure in Kelvin polarization with the wind) is planted on "
+                     "16 states and run 4 days in paired rollouts. Matsuno's theory: it moves east at c = 15–45 m/s "
+                     "(convectively coupled to dry) and stays equatorially trapped. Control: the same wind with temperature "
+                     "and pressure flipped, which is not a Kelvin mode. Dotted lines: 15 and 45 m/s.</p>"
+                     + _img("emergent_kelvin.png", "Kelvin wave propagation")
+                     + f"<p>v8's Kelvin wave moves east at {k8['kelvin']['phase_speed_m_s']:+.0f} m/s, keeps its meridional wind "
+                       f"small (V/U {k8['kelvin']['v_over_u'][-1]:.2f} after 4 days) and {k8['kelvin']['amp_kept_end']:.0%} of its "
+                       f"amplitude; the anti-Kelvin control does not propagate ({k8['anti']['phase_speed_m_s']:+.1f} m/s) and "
+                       "decays faster. v2 does the same. With its vertical heads off v8 loses the wave within a day: the "
+                       "coupling between the wind and the temperature that makes a Kelvin wave runs through them.</p>")
+    if bar["v8"]:
+        fig, axs = plt.subplots(1, 2, figsize=(10, 3.6), facecolor=SURF)
+        for i, var in enumerate(("west", "none", "east")):
+            v = bar["v8"]["variants"][var]
+            t = np.arange(len(v["E"])) / 4.0
+            axs[0].plot(t, np.sqrt(np.array(v["E"]) / v["E"][0]), color=PALETTE[i], lw=1.6,
+                        label={"west": "tilted west with height", "none": "untilted", "east": "tilted east"}[var])
+            axs[1].plot(t, v["tilt_V2_V7"], color=PALETTE[i], lw=1.6)
+            if bar["v8-novert"]:
+                vv = bar["v8-novert"]["variants"][var]
+                axs[0].plot(t, np.sqrt(np.array(vv["E"]) / vv["E"][0]), color=PALETTE[i], lw=1.0, ls=":")
+        _style(axs[0], "v8: wave amplitude (dotted: vertical heads off)")
+        _style(axs[1], "phase of V_2 relative to V_7 (rad; > 0 = westward tilt)")
+        for ax in axs:
+            ax.set_xlabel("days", color=INK2)
+        axs[1].axhline(0, color="#888", lw=0.8)
+        axs[0].legend(frameon=False, labelcolor=INK, fontsize=8.5)
+        fig.savefig(out / "emergent_baroclinic.png"); plt.close(fig)
+        b8 = bar["v8"]["variants"]
+        parts.append("<h3 id='emergent-baroclinic'>Baroclinic structure</h3>"
+                     "<p>A geostrophic, hydrostatic wave (zonal wavenumber 7, near the Eady maximum, at 45°S) is planted with "
+                     "its phase tilted westward with height, untilted, or tilted eastward, and run 4 days in paired rollouts "
+                     "on 16 states. Baroclinic theory: only the westward tilt draws energy from the vertical shear and grows "
+                     "(carrying heat poleward); an eastward tilt gives energy back and decays; an untilted wave develops a "
+                     "westward tilt as it starts to grow.</p>"
+                     + _img("emergent_baroclinic.png", "baroclinic growth by tilt")
+                     + f"<p>Every wave first sheds the part of it that is not a growing mode (amplitude falls to "
+                       f"{_bc_growth(b8['west'])[0]:.2f}–{_bc_growth(b8['none'])[0]:.2f} over ~2 days), then grows. From that "
+                       f"minimum to day 4 the westward-tilted wave grows at <b>{_bc_growth(b8['west'])[2]:.2f}/day</b> and the "
+                       f"untilted one, which has meanwhile tilted westward by itself ({b8['none']['tilt_V2_V7'][0]:+.2f} → "
+                       f"{b8['none']['tilt_V2_V7'][-1]:+.2f} rad), at <b>{_bc_growth(b8['none'])[2]:.2f}/day</b>, within the "
+                       f"0.4–0.6/day Eady range; the eastward-tilted wave turns westward and grows only "
+                       f"{_bc_growth(b8['east'])[2]:.2f}/day. All three carry heat poleward. v2 shows the same ordering at "
+                       "somewhat lower rates. Without its vertical heads v8 loses every wave within two days: baroclinic "
+                       "growth needs the upper and lower levels to talk.</p>")
     if ine["v8"] or lam["v8"]:
         parts.append("<h3 id='emergent-fast'>Fast, unbalanced motion is damped, not propagated</h3>"
                      "<p><b>Lamb pulse.</b> A 200 Pa bump should leave as a ring at 310 m/s (6700 km after one step, as after "
                      "the 2022 Hunga Tonga eruption). Both models instead let it decay where it is and smear outward over "
                      "about 2500 km. <b>Inertial rotation.</b> A zonal wind band with no pressure gradient to balance it "
                      "should turn by −sin(fΔt) in 6 h; intact v8 leaves it almost untouched. With its vertical heads "
-                     "switched off, v8 does turn it, with the right sign in each hemisphere, at about 20% of theory: "
-                     "a Coriolis term seems to live in the horizontal machinery, and the vertical heads cancel it for this "
-                     "unbalanced input (not yet understood).</p>")
+                     "switched off (mean-ablated), v8 does turn it, with the right sign in each hemisphere, at about 20% of theory."
+                     + (f" The clean test patches only the vertical heads' <i>response</i> to the band (their outputs replaced by "
+                        f"those of the unperturbed run): the band then turns with both quadratures right at about 45% of theory "
+                        f"(dV/A {inec['rows'][7]['model']['3']['dV']:+.2f} vs {inec['rows'][7]['theory']['dV']:+.2f} at 45°N, "
+                        f"{inec['rows'][1]['model']['3']['dV']:+.2f} vs {inec['rows'][1]['theory']['dV']:+.2f} at 45°S). "
+                        "So the horizontal machinery does compute Coriolis turning, and the vertical heads cancel it: a wind "
+                        "band that is the same at every level looks like a balanced jet, and they supply the pressure-gradient "
+                        "term such a jet would have.</p>" if inec else " Why is not yet understood.</p>"))
     return "".join(parts)
 
 
