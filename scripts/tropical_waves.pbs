@@ -1,0 +1,14 @@
+#!/bin/bash
+# qsub -q backfill -v CKPT=v8 scripts/tropical_waves.pbs
+#PBS -A E3SM
+#PBS -q gpu
+#PBS -N vit-waves
+#PBS -l select=1:ngpus=1
+#PBS -l walltime=02:00:00
+#PBS -j oe
+#PBS -o logs/
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$HOME/vit-interp}"
+O=/lcrc/globalscratch/ac.ngmahfouz/vit-interp/runs/f3d-rope/lab/waves
+.venv/bin/python scripts/tropical_waves.py run --ckpt "${CKPT:-v8}" --years "${YEARS:-2011-2012}" --out $O
+.venv/bin/python scripts/tropical_waves.py analyze --ckpt "${CKPT:-v8}" --out $O

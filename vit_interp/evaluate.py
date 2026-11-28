@@ -112,9 +112,10 @@ class Stepper:
             d = self.jitter(net, xn) if self.jitter is not None else net(xn)
         nxt, diag = self.em.physical(x, d)
         if self.em.corrector is not None:
-            nxt, _, self.ref = self.em.corrector(x, nxt, diag, self.ref, forcing_next)
+            nxt, diag, self.ref = self.em.corrector(x, nxt, diag, self.ref, forcing_next)
         if self.smooth is not None:
             nxt = self.smooth.apply(state, nxt)
+        self.diag = diag  # the step's (corrected) diagnostics, physical units, or None
         return nxt
 
 
