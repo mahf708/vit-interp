@@ -45,6 +45,10 @@ def main():
                    help="scale-selective damping: remove this fraction of the increment's small-scale part "
                         "(what a kc=30, 2-pass smoother takes out); --damp-small-top for the top levels")
     p.add_argument("--damp-small-top", type=float, default=None)
+    p.add_argument("--ablate", default="",
+                   help="components to mean-ablate at every step, e.g. L7H3,L6MLP (an intervention test)")
+    p.add_argument("--ablate-scale", type=float, default=0.0,
+                   help="keep this fraction of the ablated components' spatial pattern (0 = full mean-ablation)")
     p.add_argument("--jitter", default="", help="patch jitter mode: cycle16, lon, random")
     p.add_argument("--out", required=True)
     a = p.parse_args()
@@ -57,7 +61,30 @@ def main():
     attach(em, ck, meta)
     smooth = SeamFilter(lat, len(meta["lon"]), a.filter, a.shapiro).to(dev) if (a.filter or a.shapiro) else None
     from vit_interp.filters import PatchJitter
-    step = Stepper(em, dev, smooth, PatchJitter(em.cfg.patch, a.jitter) if a.jitter else None)
+    hooks = None
+    if a.ablate:
+        by: dict = {}
+        for n in a.ablate.split(","):
+            if n.endswith("MLP"):
+                by.setdefault(f"blocks.{int(n[1:-3])}.hook_mlp_out", None)
+            else:
+                i, h = n[1:].split("H")
+                by.setdefault(f"blocks.{int(i)}.attn.hook_result", []).append(int(h))
+        keep = a.ablate_scale
+
+        def make(hs):
+            def f(t):  # mean over tokens (per level in 3D models), keeping `keep` of the pattern
+                t = t.clone()
+                sl = (Ellipsis, hs, slice(None)) if hs is not None else (Ellipsis,)
+                tok = -3 if hs is not None else -2
+                v = t[sl]
+                m = v.mean(tok, keepdim=True)
+                t[sl] = m + keep * (v - m)
+                return t
+            return f
+        hooks = {k: make(v) for k, v in by.items()}
+        print("ablating", a.ablate, "keep", keep, flush=True)
+    step = Stepper(em, dev, smooth, PatchJitter(em.cfg.patch, a.jitter) if a.jitter else None, hooks)
     scale = None
     if a.damp or a.damp_top:
         sc = torch.full((N_PROG,), 1.0 - a.damp)

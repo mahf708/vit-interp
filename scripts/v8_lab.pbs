@@ -1,0 +1,12 @@
+#!/bin/bash
+# qsub -q backfill -v STUDY=heads scripts/v8_lab.pbs
+#PBS -A E3SM
+#PBS -q backfill
+#PBS -N v8-lab
+#PBS -l select=1:ngpus=1
+#PBS -l walltime=04:00:00
+#PBS -j oe
+#PBS -o logs/
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$HOME/vit-interp}"
+.venv/bin/python scripts/v8_lab.py "$STUDY" --out /lcrc/globalscratch/ac.ngmahfouz/vit-interp/runs/f3d-rope/lab

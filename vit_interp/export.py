@@ -36,14 +36,18 @@ def coarsen(x: np.ndarray, p: int) -> np.ndarray:
 
 @torch.no_grad()
 def export(ckpt, out, year=2010, start=0, n=120, every=1, layers=None, embed=False,
-           data=DATA_ROOT, device=None, batch=8, overwrite=False):
+           data=DATA_ROOT, device=None, batch=8, overwrite=False, level=None):
+    """3D models (v8) have one stream per token level: ``level`` (0..7, 8 = surface) picks it."""
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     meta = json.loads((Path(data) / "meta.json").read_text())
     em, ck = Emulator.load(ckpt, Stats(data), meta["lat"], map_location=device)
     em = em.to(device).eval()
     cfg = em.cfg
     layers = list(range(cfg.depth)) if layers is None else list(layers)
-    names = {f"blocks.{i}.hook_resid_post" for i in layers} | ({"hook_embed", "hook_pos_embed"} if embed else set())
+    is3d = getattr(cfg, "arch", "vit") == "vit3d"
+    if is3d and level is None:
+        raise ValueError("a 3D model needs --level (0..7, 8 = surface)")
+    names = {f"blocks.{i}.hook_resid_post" for i in layers}
 
     src = Trajectories([year], 0, data)
     times_all = src.times(year)
@@ -53,18 +57,26 @@ def export(ckpt, out, year=2010, start=0, n=120, every=1, layers=None, embed=Fal
     for b in range(0, len(idx), batch):
         x = torch.stack([torch.from_numpy(src[i][0]) for i in idx[b:b + batch]]).to(device)
         cache: dict = {}
+        noise = (torch.zeros(x.shape[0], cfg.n_tokens, cfg.noise_dim, device=device)
+                 if cfg.noise_dim else None)  # the median path, as the playground
         with torch.autocast(device.split(":")[0], dtype=torch.bfloat16, enabled=device != "cpu"):
-            em.step(x, cache=cache, names=names)
-        for k in names:
-            acc[k].append(cache[k].float().cpu().numpy().astype(np.float16))
+            em.step(x, cache=cache, names=names, noise=noise)
+            if embed:
+                from .model import _Ctx
+
+                cache["embed"] = em.net.embed(em.normalize(x), _Ctx(None, None, None))
+        for k in list(names) + (["embed"] if embed else []):
+            t = cache[k]
+            if is3d:
+                t = t[:, level]
+            acc.setdefault(k, []).append(t.float().cpu().numpy().astype(np.float16))
         states.append(x.cpu().numpy())
     X = np.concatenate(states)
     lat, lon, shape = token_latlon(meta["lat"], meta["lon"], cfg.patch)
     grid = Grid(lat=lat.astype(np.float64), lon=lon.astype(np.float64), shape=shape)
     out_layers, net_layers = [], []
     if embed:
-        e = np.concatenate(acc["hook_embed"]) + np.concatenate(acc["hook_pos_embed"])
-        out_layers.append(("embed + pos", e))
+        out_layers.append(("embed + pos", np.concatenate(acc["embed"])))
         net_layers.append(0)
     for i in layers:
         out_layers.append((f"blocks.{i}.resid_post", np.concatenate(acc[f"blocks.{i}.hook_resid_post"])))
@@ -77,7 +89,8 @@ def export(ckpt, out, year=2010, start=0, n=120, every=1, layers=None, embed=Fal
         component="atmosphere", checkpoint=str(Path(ckpt).resolve()), calendar="noleap",
         timestep_seconds=21600,
         experiment={"patch": cfg.patch, "dim": cfg.dim, "depth": cfg.depth, "heads": cfg.heads,
-                    "epoch": ck.get("epoch"), "step": ck.get("step")},
+                    "epoch": ck.get("epoch"), "step": ck.get("step"),
+                    **({"arch": "vit3d", "token_level": level} if is3d else {})},
         overwrite=overwrite,
     )
 
@@ -94,6 +107,10 @@ if __name__ == "__main__":
     p.add_argument("--embed", action="store_true")
     p.add_argument("--data", default=DATA_ROOT)
     p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--level", type=int, default=None, help="3D models: token level (0..7, 8 = surface)")
     a = p.parse_args()
     lay = [int(v) for v in a.layers.split(",")] if a.layers else None
-    print(export(a.ckpt, a.out, a.year, a.start, a.n, a.every, lay, a.embed, a.data, overwrite=a.overwrite))
+    from .data import resolve_checkpoint
+
+    print(export(resolve_checkpoint(a.ckpt), a.out, a.year, a.start, a.n, a.every, lay, a.embed, a.data,
+                 overwrite=a.overwrite, level=a.level))

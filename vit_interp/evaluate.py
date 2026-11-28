@@ -96,8 +96,8 @@ class Stepper:
     """One step of the emulator; with a corrector attached to ``em``, the corrected step, with
     the dry-air mass pinned to the value at the last ``reset`` (the start of a run)."""
 
-    def __init__(self, em, device, smooth=None, jitter=None):
-        self.em, self.device, self.smooth, self.jitter = em, device, smooth, jitter
+    def __init__(self, em, device, smooth=None, jitter=None, hooks=None):
+        self.em, self.device, self.smooth, self.jitter, self.hooks = em, device, smooth, jitter, hooks
         self.ref = None
 
     def reset(self):
@@ -108,7 +108,8 @@ class Stepper:
         x = torch.cat([state, forcing], 1)
         with torch.autocast(self.device.type, dtype=torch.bfloat16, enabled=self.device.type == "cuda"):
             xn = self.em.normalize(x)
-            d = self.jitter(self.em.net, xn) if self.jitter is not None else self.em.net(xn)
+            net = (lambda z: self.em.net(z, hooks=self.hooks)) if self.hooks else self.em.net
+            d = self.jitter(net, xn) if self.jitter is not None else net(xn)
         nxt, diag = self.em.physical(x, d)
         if self.em.corrector is not None:
             nxt, _, self.ref = self.em.corrector(x, nxt, diag, self.ref, forcing_next)

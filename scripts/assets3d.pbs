@@ -1,0 +1,28 @@
+#!/bin/bash
+# Latent archives (January 2010) of a 3D model at given token levels, with sparse autoencoders.
+#   qsub -v CKPT=v8,NAME=v8,LEVELS="3 8" scripts/assets3d.pbs
+#PBS -A E3SM
+#PBS -q backfill
+#PBS -N v8-assets
+#PBS -l select=1:ngpus=1
+#PBS -l walltime=04:00:00
+#PBS -j oe
+#PBS -o logs/
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$HOME/vit-interp}"
+A=/lcrc/globalscratch/ac.ngmahfouz/vit-interp/archives; mkdir -p $A
+X=.venv/bin/exege
+for LV in ${LEVELS:-3 8}; do
+  out=$A/${NAME}-2010-jan-level$LV
+  echo "$(date) export $out"
+  .venv/bin/python -m vit_interp.export "$CKPT" "$out" --year 2010 --start 0 --n 120 --embed --level $LV --data /lcrc/globalscratch/ac.ngmahfouz/vit-interp/data-v2 --overwrite
+  $X latents info "$out" > "$out/INFO.txt" || true
+  mkdir -p "$out/bases"
+  for L in 3 6; do
+    echo "$(date) SAE level $LV archive layer $L"
+    $X nn sae "$out" --layer $L --features 1024 --activation topk --k 32 --epochs 6 --device cuda \
+      --out "$out/bases/sae-topk32-layer$L.npz"
+  done
+done
+chmod -R a+rX $A
+echo "$(date) done"
