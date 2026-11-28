@@ -1,0 +1,12 @@
+#!/bin/bash
+# qsub -q backfill -v PROBE=lamb,CKPT=v8,ARGS="--steps 4" scripts/emergent.pbs
+#PBS -A E3SM
+#PBS -q gpu
+#PBS -N emergent
+#PBS -l select=1:ngpus=1
+#PBS -l walltime=02:00:00
+#PBS -j oe
+#PBS -o logs/
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$HOME/vit-interp}"
+.venv/bin/python scripts/emergent.py "$PROBE" --ckpt "$CKPT" ${ARGS:-} --out /lcrc/globalscratch/ac.ngmahfouz/vit-interp/runs/f3d-rope/lab/emergent
