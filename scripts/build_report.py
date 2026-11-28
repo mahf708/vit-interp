@@ -1652,6 +1652,41 @@ def emergent_section(out: Path) -> str:
                        f"{_bc_growth(b8['east'])[2]:.2f}/day. All three carry heat poleward. v2 shows the same ordering at "
                        "somewhat lower rates. Without its vertical heads v8 loses every wave within two days: baroclinic "
                        "growth needs the upper and lower levels to talk.</p>")
+    wv = RUNS / "f3d-rope" / "lab" / "waves"
+    tw = json.loads((wv / "tropics-v8.json").read_text()) if (wv / "tropics-v8.json").exists() else None
+    if tw:
+        shutil.copy(wv / "wk-FLUT-v8.png", out / "emergent_wk_flut.png")
+        sF, sU = tw["spectra"]["FLUT"], tw["spectra"]["U_6"]
+        g = tw["gill_regression"]
+        rows_e = [["Kelvin wave speed (outgoing longwave)", f"{sF['truth']['kelvin_speed_m_s']:.1f} m/s (h {sF['truth']['kelvin_h_m']:.0f} m)",
+                   f"{sF['emu']['kelvin_speed_m_s']:.1f} m/s (h {sF['emu']['kelvin_h_m']:.0f} m)"],
+                  ["Kelvin wave speed (wind at level 6, ~830 hPa)", f"{sU['truth']['kelvin_speed_m_s']:.1f} m/s", f"{sU['emu']['kelvin_speed_m_s']:.1f} m/s"],
+                  ["Kelvin-band power above background (outgoing longwave)", f"{sF['truth']['kelvin_signal']:+.0%}", f"{sF['emu']['kelvin_signal']:+.0%}"],
+                  ["equatorial Rossby band, power ÷ E3SM background", f"{sF['truth']['er_ratio']:.2f}", f"{sF['emu']['er_ratio']:.2f}"],
+                  ["MJO band power (relative to E3SM)", "1.00", f"{sF['emu']['mjo_power'] / sF['truth']['mjo_power']:.2f}"],
+                  ["Gill regression on equatorial Pacific rain: pattern correlation with E3SM (U low / U upper / V low)", "–",
+                   " / ".join(f"{g['pattern_corr'][f]:.2f}" for f in ("U_6", "U_2", "V_6"))],
+                  ["… amplitude relative to E3SM", "1", " / ".join(f"{g['amplitude_ratio'][f]:.2f}" for f in ("U_6", "U_2", "V_6"))]]
+        parts.append("<h3 id='emergent-e3sm'>Against E3SM itself</h3>"
+                     "<p>Theory is an idealized yardstick: E3SM has convection, friction and diffusion that it leaves out, so a "
+                     "probe matching theory is not the same as matching E3SM. The E3SM reference for wave dynamics is its own "
+                     f"variability. v8 runs freely over the held-out years {tw['years']} (true forcings, prescribed sea surface "
+                     "temperature, correctors, jitter and seam filter), and its tropical fields are compared with E3SM's over "
+                     "the same years: Wheeler–Kiladis wavenumber–frequency spectra (symmetric about the equator, divided by "
+                     "E3SM's smoothed background; white lines: Kelvin and equatorial Rossby dispersion for equivalent depths "
+                     "12, 25, 50 m), and the regression of low- and upper-level wind on equatorial Pacific rainfall (a "
+                     "Gill-type heating response).</p>"
+                     + _img("emergent_wk_flut.png", "Wheeler-Kiladis spectra, E3SM vs v8")
+                     + _table(["", "E3SM", "v8 (free run)"], rows_e)
+                     + "<p><b>v8's free-running tropical waves are E3SM's.</b> Its Kelvin waves travel at E3SM's convectively "
+                       "coupled speed (~17–18 m/s, equivalent depth ~30 m), with a somewhat stronger signal; equatorial Rossby "
+                       "and MJO power are within ~10%; and its wind response to Pacific rainfall has E3SM's pattern and "
+                       "amplitude. The planted dry Kelvin wave above (seeded at 35 m/s) travelled at ~26 m/s, between the dry "
+                       "and E3SM's coupled speed. v2 cannot be compared over five years (its free runs go unstable within "
+                       "months); over 2011–2012 its rainfall–wind regression matched E3SM's less well than v8's (pattern "
+                       "correlation 0.57 vs 0.86 for low-level zonal wind, 0.35 vs 0.82 for meridional wind). The probes with "
+                       "no counterpart in E3SM's variability (Lamb pulse, inertial band, tilted baroclinic waves) still have "
+                       "only theory as a yardstick; short E3SM runs from the same perturbed states would settle them.</p>")
     if ine["v8"] or lam["v8"]:
         parts.append("<h3 id='emergent-fast'>Fast, unbalanced motion is damped, not propagated</h3>"
                      "<p><b>Lamb pulse.</b> A 200 Pa bump should leave as a ring at 310 m/s (6700 km after one step, as after "

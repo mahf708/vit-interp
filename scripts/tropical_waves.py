@@ -171,15 +171,25 @@ def analyze(a):
         stats = {}
         for src in ("truth", "emu"):
             _, _, Ps, Pa, bg = sp[src]
-            stats[src] = {"kelvin_power": float(Ps[kel].sum()), "er_power": float(Ps[er].sum()),
+            stats[src] = {"kelvin_power": float(Ps[kel].sum()),
+                          "kelvin_signal": float((Ps / sp["truth"][4])[kel].mean() - 1), "er_power": float(Ps[er].sum()),
                           "mjo_power": float(Ps[mjo].sum()),
                           "kelvin_ratio": float((Ps / sp["truth"][4])[kel].mean()),
                           "er_ratio": float((Ps / sp["truth"][4])[er].mean()),
                           "total_sym": float(Ps[(np.abs(ff) <= 0.8) & (np.abs(kk) <= 15)].sum())}
-            # equivalent depth of the Kelvin peak: fit c from the power-weighted frequency/wavenumber in the band
-            w = Ps[kel]
-            c = float((w * ff[kel] / np.maximum(kk[kel], 1)).sum() / w.sum()) * 2 * np.pi * 6.371e6 / 86400
+            # Kelvin speed: at each eastward wavenumber 2..10, the frequency of the largest power/background inside
+            # the Kelvin band (between the h = 8 and 90 m dispersion lines); speed = 2 pi a f / k, median over k
+            R = Ps / sp["truth"][4]
+            cs = []
+            for kw in range(2, 11):
+                col = (kk == kw) & kel
+                if col.sum() < 3:
+                    continue
+                fpk = ff[col][np.argmax(R[col])]
+                cs.append(2 * np.pi * 6.371e6 * fpk / (kw * 86400))
+            c = float(np.median(cs)) if cs else float("nan")
             stats[src]["kelvin_speed_m_s"] = c
+            stats[src]["kelvin_speed_by_k"] = [float(x) for x in cs]
             stats[src]["kelvin_h_m"] = c * c / 9.81
         res["spectra"][f] = stats
         print(f, json.dumps(stats, indent=0), flush=True)
