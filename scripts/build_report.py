@@ -953,6 +953,329 @@ def rossby_versions(out: Path) -> str:
             + _table(["version", "30°N", "45°N", "60°N", "45°S", "LAWFUL block circuit at 45°N (correlation score)"], rows))
 
 
+# -- Inside v8: interpretability of the 3D model ------------------------------------------------
+
+LAB = RUNS / "f3d-rope" / "lab"
+
+
+def _lawful_groups() -> dict | None:
+    """lawful_groups.json if the job finished; else the group deviations it already printed to its log."""
+    p = LAB / "lawful_groups.json"
+    if p.exists():
+        return json.loads(p.read_text())
+    import ast
+    import re
+    out: dict = {}
+    for log in sorted((Path(__file__).resolve().parents[1] / "logs").glob("*.OU")):
+        txt = log.read_text(errors="ignore")
+        if "vertical heads {'components'" not in txt:
+            continue
+        for line in txt.splitlines():
+            m = re.match(r"^(-?45) (horizontal heads|vertical heads|MLPs|heads \(both kinds\)) (\{.*\})\s*$", line)
+            if m:
+                key = "45N" if m.group(1) == "45" else "45S"
+                out.setdefault(key, {"groups": {}})["groups"][m.group(2)] = ast.literal_eval(m.group(3))
+    return out or None
+
+
+def _hold_days(d, n):
+    t7, ps, u3 = n.index("T_7"), n.index("PS"), n.index("U_3")
+    return next((i + 1 for i in range(len(d)) if abs(d[i, t7]) > 2 or abs(d[i, ps]) > 100 or abs(d[i, u3]) > 3), len(d))
+
+
+def inside_v8_section(out: Path) -> str:
+    if not LAB.exists():
+        return ""
+    parts = ["<h2 id='inside-v8'>Inside v8: what the vertical heads do</h2>"
+             "<p>v8 gives every level its own token, and only heads 4–5 of each block can look up and down a column "
+             "(heads 0–3 look across a level). That makes questions answerable that the 2D models could not pose: which "
+             "components move information between levels, which read the surface, and whether a physical law "
+             "lives in the horizontal or the vertical machinery. All probes use 2010 states (held out) and v8's released "
+             "checkpoint, with its noise held at zero; code in <code>scripts/v8_lab.py</code>.</p>"]
+
+    # 1. transmission
+    tp = LAB / "transmission.json"
+    if tp.exists():
+        t = json.loads(tp.read_text())
+        variants = [k for k in ("intact", "no vertical heads", "no horizontal heads") if k in t]
+        fig, axs = plt.subplots(1, len(variants), figsize=(3.6 * len(variants) + 1.2, 3.8), facecolor=SURF)
+        axs = np.atleast_1d(axs)
+        from matplotlib.colors import LogNorm
+        norm = LogNorm(1e-3, 1.5)
+        for ax, k in zip(axs, variants):
+            M = np.array(t[k])
+            im = ax.imshow(M, cmap="viridis", norm=norm, origin="upper")
+            ax.set_title(k, fontsize=10, color=INK)
+            ax.set_xticks(range(8)); ax.set_yticks(range(8))
+            ax.set_xlabel("responding level", color=INK2, fontsize=9)
+            ax.tick_params(labelsize=8, colors=INK2)
+        axs[0].set_ylabel("planted level", color=INK2, fontsize=9)
+        cb = fig.colorbar(im, ax=axs.tolist(), shrink=0.85, pad=0.02)
+        cb.set_label("V tendency response (m/s per 6 h)", fontsize=8.5, color=INK2); cb.ax.tick_params(labelsize=8)
+        fig.savefig(out / "v8_transmission.png"); plt.close(fig)
+
+        def off(M):
+            M = np.array(M)
+            return float(M.sum() - np.trace(M)) / 56
+
+        o = {k: off(t[k]) for k in variants}
+        diag = {k: float(np.trace(np.array(t[k]))) / 8 for k in variants}
+        rows = [[k, f"{diag[k]:.3f}", f"{o[k]:.4f}", f"{o[k] / o['intact']:.0%}"] for k in variants]
+        parts.append(
+            "<h3 id='v8-transmission'>Who carries information between levels?</h3>"
+            "<p>A wave is planted in the meridional wind of one level (rows); the model takes one step; we measure how "
+            "much each level's V tendency changes (columns, band RMS over 4 states). Then the same with all 16 vertical "
+            "heads, or all 32 horizontal heads, mean-ablated.</p>"
+            + _img("v8_transmission.png", "level-to-level transmission, intact and with head groups removed")
+            + _table(["variant", "same-level response", "other-level response (mean)", "other-level, vs intact"], rows)
+            + f"<p><b>Removing the 16 vertical heads cuts the coupling between levels by "
+              f"{1 - o['no vertical heads'] / o['intact']:.0%}</b> (the same-level response halves too, as it does without the "
+              f"horizontal heads); removing "
+              f"the 32 horizontal heads instead leaves {o.get('no horizontal heads', float('nan')) / o['intact']:.0%} of it. "
+              "Horizontal heads still matter for vertical coupling because what a vertical head reads at another level "
+              "was first shaped by horizontal mixing there. The remaining few percent enter outside attention (not yet "
+              "traced). As designed: in v8, exchange between levels is attention's job, done by a small, named set of "
+              "heads.</p>")
+
+    # 2. surface-reading heads
+    vp = LAB / "vertical_reading.json"
+    if vp.exists():
+        v = json.loads(vp.read_text())
+        cols = ["Tibetan Plateau", "land", "open ocean", "sea ice"]
+        by: dict = {}
+        for r in v:
+            by.setdefault((r["layer"], r["head"]), {})[r["columns"]] = r
+        heads = sorted(by, key=lambda k: -by[k].get("Tibetan Plateau", {}).get("surface_weight", 0))
+        rows = []
+        for (l, h) in heads[:8]:
+            rows.append([f"<code>L{l}H{h}</code>"] + [f"{by[(l, h)][c]['surface_weight']:.2f}" if c in by[(l, h)] else "–" for c in cols]
+                        + [f"{by[(l, h)].get('open ocean', {}).get('mean_read_offset', float('nan')):+.1f}"])
+        # small multiples: mean level->level attention of every vertical head over open ocean
+        pats = [(l, h, np.array(by[(l, h)]["open ocean"]["pattern"])) for (l, h) in sorted(by) if "open ocean" in by[(l, h)]]
+        if pats:
+            n = len(pats)
+            fig, axs = plt.subplots(2, (n + 1) // 2, figsize=(1.3 * ((n + 1) // 2) + 0.5, 3.4), facecolor=SURF, layout="constrained")
+            for ax, (l, h, P) in zip(axs.flat, pats):
+                ax.imshow(P, cmap="magma", vmin=0, vmax=max(0.5, float(P.max())))
+                ax.set_title(f"L{l}H{h}", fontsize=8.5, color=INK, pad=2)
+                ax.set_xticks([]); ax.set_yticks([])
+            for ax in list(axs.flat)[n:]:
+                ax.axis("off")
+            fig.supxlabel("key level (0 = model top … 7 = lowest, 8 = surface)", fontsize=8.5, color=INK2)
+            fig.supylabel("query level", fontsize=8.5, color=INK2)
+            fig.savefig(out / "v8_vertical_patterns.png"); plt.close(fig)
+        parts.append(
+            "<h3 id='v8-surface-heads'>Heads that read the surface</h3>"
+            "<p>For each vertical head: the attention weight that the 8 atmospheric tokens of a column put on the surface "
+            "token (PS, TS and the forcings), averaged over columns of each kind, and the mean offset in levels from query "
+            "to key over open ocean (+ = reads lower, toward the surface). Uniform attention would put 1/9 = 0.11 on the surface.</p>"
+            + _table(["head", "Tibetan Plateau", "land", "open ocean", "sea ice", "mean read offset, open ocean (levels)"], rows)
+            + "<p>Head 5 of blocks 0, 1 and 3 is the surface reader: over the Tibetan Plateau, where the surface sits "
+              "inside the mid-troposphere, its atmospheric tokens put 0.45–0.60 of their attention on the surface token, "
+              "against 0.2–0.4 elsewhere (0.11 would be uniform). Block 0's head 4, by contrast, spreads its attention widely "
+              "and on average reads one level below the query.</p>"
+            + (_img("v8_vertical_patterns.png", "mean attention pattern of every vertical head, open ocean") if pats else "")
+            + "<p class='muted'>Each panel: rows are query levels, columns key levels (top-left = model top, last "
+              "row/column = surface), averaged over open-ocean columns of 4 states.</p>")
+
+    # 3. vertical-head atlas
+    ap = LAB / "atlas.json"
+    if ap.exists():
+        a = [r for r in json.loads(ap.read_text()) if r["kind"] == "v"]
+        bands = ["tropics", "NH mid", "SH mid"]
+        by = {}
+        for r in a:
+            by.setdefault((r["layer"], r["head"]), {})[r["band"]] = r
+        rows = []
+        for (l, h) in sorted(by):
+            al = by[(l, h)].get("all", {})
+            rows.append([f"<code>L{l}H{h}</code>", f"{al.get('self', float('nan')):.2f}", f"{al.get('entropy', float('nan')):.2f}"]
+                        + [f"{by[(l, h)][b]['dlev']:+.2f}" if b in by[(l, h)] else "–" for b in bands])
+        parts.append(
+            "<h3 id='v8-atlas'>Vertical-head atlas</h3>"
+            "<p>Per vertical head, over 2010 states: attention on its own level, entropy of the level distribution "
+            "(ln 9 = 2.20 is uniform), and the mean signed level offset of what it reads in three latitude bands "
+            "(positive = reads levels below, toward the surface).</p>"
+            + _table(["head", "self-attention", "entropy", "offset, tropics", "NH mid-latitudes", "SH mid-latitudes"], rows))
+
+    # 4. NP circuit across versions
+    crow = []
+    for v in VERSIONS:
+        p = RUNS / v["run"] / "explore-final" / "prune_v3_npac.json"
+        if not p.exists():
+            continue
+        c = json.loads(p.read_text())
+        snd = Counter(e.split("->")[0] for e in c["edges"])
+        blk = Counter(e.split("->")[0].split(".")[0] for e in c["edges"])
+        is3d = v["name"] == "v8"
+        vert = sum(n for s, n in snd.items() if s.endswith((".h4", ".h5"))) if is3d else None
+        heads = sum(n for s, n in snd.items() if ".h" in s)
+        crow.append([v["name"], f"{c['n_edges']} of {c['of']}", f"{c['recovery']:.2f}",
+                     ", ".join(f"<code>{k}</code> {n}" for k, n in blk.most_common(4)),
+                     f"{vert} of {heads} head edges" if is3d else "– (no vertical heads)"])
+    if crow:
+        parts.append(
+            "<h3 id='v8-circuit'>The North Pacific circuit, v2 to v8</h3>"
+            "<p>The same Vi-CD problem on every version: the 6-h V_3 change within 2000 km of 45°N, 180°, base "
+            "2010-01-15 against 2010-01-20, greedy pruning at τ = 0.02. For v8 the metric reads the level-3 tokens.</p>"
+            + _table(["version", "edges kept", "recovery", "busiest senders", "from vertical heads"], crow)
+            + "<p>The 2D models route this jet-level response through block 4 (17 edges in each of v2–v4) and the embedding. "
+              "v8 needs fewer edges, spreads them over blocks 4–6 and the embedding, and a minority run through vertical "
+              "heads: the jet-level wind is a horizontal problem, and v8 treats it as one. Recovery above 1 (the 2D models) "
+              "means the kept edges overshoot the full model's change; v8's circuit recovers 87%.</p>")
+
+    # 5. LAWFUL by head type
+    lg = _lawful_groups()
+    if lg:
+        rows = []
+        for band in ("45N", "45S"):
+            e = lg.get(band)
+            if not e:
+                continue
+            G = e["groups"]
+            m0 = next(iter(G.values()))["M0"]
+            for name in ("horizontal heads", "vertical heads", "MLPs"):
+                if name in G:
+                    g = G[name]
+                    rows.append([band, name, len(g["components"]) if isinstance(g.get("components"), list) else "",
+                                 f"{m0:.2f}", f"{g['M_suf']:+.2f}", f"{g['M_nec']:+.2f}"])
+        searched = [f"{b}: " + "; ".join(f"τ {c['tau']}: {len(c['units'])} groups" for c in lg[b].get("search", []))
+                    for b in lg if lg[b].get("search")]
+        parts.append(
+            "<h3 id='v8-lawful'>Where does the Rossby law live? (LAWFUL by head type)</h3>"
+            "<p>The barotropic Rossby probe of <a href='#rossby-versions'>Rossby waves across versions</a>, scored as the "
+            "correlation between the model's dispersion and theory (M; 1 is perfect). <b>Alone</b>: only this group "
+            "computes, the rest is mean-ablated. <b>Without</b>: this group is mean-ablated.</p>"
+            + _table(["latitude", "group", "components", "M, full model", "M, group alone", "M, without group"], rows)
+            + "<p>The law needs the MLPs (without them the correlation falls to −0.06 / −0.13) and the horizontal heads "
+              "(without them, 0.35–0.36). It hardly needs the vertical heads: without all 16 of them the correlation is "
+              "still 0.54 at 45°N and 0.84 at 45°S, against 0.83 and 0.92 intact. A barotropic wave is a "
+              "within-level phenomenon, and v8 computes it mostly within levels. No head group reproduces the law on its "
+              "own.</p>"
+            + (f"<p class='muted'>Circuit search over per-block head groups: {'; '.join(searched)}.</p>" if searched else ""))
+
+    # 6. surface heating circuits
+    sp = LAB / "surface_circuits.json"
+    if sp.exists():
+        s = json.loads(sp.read_text())
+        rows = []
+        for region, d in s.items():
+            for f, x in d.items():
+                e = x["edges"]
+                hs = [q for q in e if ".h" in q.split("->")[0]]
+                vs = [q for q in hs if q.split("->")[0].endswith((".h4", ".h5"))]
+                top = ", ".join(f"<code>{html.escape(k)}</code>" for k, _ in x["top_eap"][:3])
+                rows.append([region, f, f"{x['corrupt'] - x['clean']:+.3f} K", x["n_edges"], f"{x['recovery']:.2f}",
+                             f"{len(vs)} of {len(hs)}", top])
+        parts.append(
+            "<h3 id='v8-surface'>A circuit for surface heating</h3>"
+            "<p>The skin temperature is raised 5 K within 8° of a point (Tibetan Plateau in June, Sahara in July) and the "
+            "model takes one step. The metric is the mean temperature change at one level within 1000 km. Edges are "
+            "scored by exact activation patching and pruned at τ = 0.02.</p>"
+            + _table(["case", "level", "one-step response", "edges kept", "recovery", "head edges from vertical heads",
+                      "largest single edges"], rows)
+            + "<p>The lowest level (T_7) warms 0.2–0.4 K in one step, through about 100 edges that start at the embedding "
+              "and the surface-reading head 5 of blocks 1 and 3. <b>About 70% of the head edges come from vertical heads</b>, "
+              "which are a third of all heads: surface heating climbs the column through the vertical heads, then the MLPs "
+              "turn it into a temperature tendency. Higher up, the one-step response is tiny (T_3: "
+              "0.004 K over Tibet, −0.01 K over the Sahara), and the 233–389-edge circuits pruned for it fit noise: "
+              "<b>treat them as no circuit</b>. In six hours, heat reaches one or two levels above the surface.</p>")
+
+    # 7. error components and the intervention decade runs
+    ep = LAB / "error_components.json"
+    if ep.exists():
+        ec = json.loads(ep.read_text())
+        b0 = np.array(ec["baseline_bias"])
+        comps = ec["components"]
+        top = sorted(comps, key=lambda r: r["top_bias_change"])[:6]
+        mid = sorted(comps, key=lambda r: -r["mid_bias_change"])[:6]
+        erows = [[f"<code>{r['component']}</code>", {"h": "horizontal", "v": "vertical"}.get(r["kind"], r["kind"]),
+                  f"{r['top_bias_change'] * 4 * 365:+.1f}", f"{r['mid_bias_change'] * 4 * 365:+.1f}", f"{r['rmse']:.3f}"]
+                 for r in {x["component"]: x for x in top + mid}.values()]
+        runs = [("seed 0", "long-f3d-rope-jit-f", PALETTE[0], "-"), ("seed 1", "long-f3d-rope-jit-f-seed1", PALETTE[0], "--"),
+                ("seed 2", "long-f3d-rope-jit-f-seed2", PALETTE[0], ":"),
+                ("L4H2 off (control)", "long-v8-abl-L4H2-control", PALETTE[2], "-"),
+                ("L7H3 off", "long-v8-abl-L7H3", PALETTE[1], "-"), ("L7H3 at half", "long-v8-abl-L7H3-half", PALETTE[3], "-"),
+                ("L6H2 off", "long-v8-abl-L6H2", PALETTE[5], "-")]
+        drows, series = [], []
+        for label, tag, col, ls in runs:
+            f = DRIFT / f"{tag}.npz"
+            if not f.exists():
+                continue
+            z = np.load(f)
+            n = list(z["names"]); d = z["g_e"] - z["g_t"]
+            yrs = [d[i * 365:(i + 1) * 365] for i in range(int(np.ceil(len(d) / 365)))]
+            t0, t3 = n.index("T_0"), n.index("T_3")
+            drows.append([label, f"{_hold_days(d, n) / 365:.1f} y", f"{yrs[0][:, t0].mean():+.1f} / {yrs[0][:, t3].mean():+.1f}",
+                          f"{yrs[-1][:, t0].mean():+.1f} / {yrs[-1][:, t3].mean():+.1f}",
+                          f"{np.mean((abs(d[:, n.index('T_7')]) > 2) | (abs(d[:, n.index('PS')]) > 100) | (abs(d[:, n.index('U_3')]) > 3)):.1%}",
+                          "none" if z["blow"].item() in ("null", None) else "yes"])
+            series.append((label, np.arange(1, len(d) + 1) / 365, d[:, t0], d[:, t3], col, ls))
+        if series:
+            fig, axs = plt.subplots(1, 2, figsize=(11, 3.9), facecolor=SURF, sharex=True)
+            k = 30  # 30-day running mean
+            sm = lambda y: np.convolve(y, np.ones(k) / k, mode="valid")  # noqa: E731
+            for lab, tt, y0, y3, col, ls in series:
+                axs[0].plot(tt[k - 1:], sm(y0), color=col, ls=ls, lw=1.3, label=lab)
+                axs[1].plot(tt[k - 1:], sm(y3), color=col, ls=ls, lw=1.3, label=lab)
+            for ax, ttl in zip(axs, ("model top (T_0)", "mid-troposphere (T_3)")):
+                _style(ax, f"global-mean temperature error, {ttl} (K)")
+                ax.axhline(0, color="#888", lw=0.8); ax.set_xlabel("years from 2000-01-01", color=INK2)
+            axs[1].legend(frameon=False, labelcolor=INK, loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0, fontsize=8.5)
+            fig.savefig(out / "v8_interventions.png"); plt.close(fig)
+        parts.append(
+            "<h3 id='v8-drift'>Which components write the drift? One step versus ten years</h3>"
+            "<p>Every v8 decade run drifts the same way in its last two years: the model top warms, the "
+            "mid-troposphere cools (<a href='#decade'>Decade runs</a>). Per 6-h step over 24 states of 2010, v8's "
+            f"temperature tendency has a small global cold bias at every level ({b0[0] * 4 * 365:+.0f} K/yr at the top, "
+            f"{b0[3] * 4 * 365:+.0f} K/yr at level 3 if it accumulated unchecked; the correctors and the circulation take "
+            "most of it back). Mean-ablating each of the 56 components one at a time shows which ones shift that bias. "
+            "Columns are the change in the bias, in K per year of steps.</p>"
+            + _table(["component", "kind", "Δ top bias (K/yr)", "Δ level-3 bias (K/yr)", "1-step T error (K)"], erows)
+            + "<p>Three of these were then switched off (or halved) <b>at every step of a 10-year free run</b>, against a "
+              "control head (L4H2) that hardly moves the bias, and the three noise seeds of the intact model.</p>"
+            + (_img("v8_interventions.png", "decade runs with heads ablated, global T error at the top and mid-troposphere") if series else "")
+            + _table(["run", "climate holds*", "year 1 error T_0 / T_3 (K)", "year 10 error T_0 / T_3 (K)", "days outside*", "blow-up"], drows)
+            + "<p><b>One-step attribution does not predict multi-year drift.</b> First, the control matters: switching off "
+              "L4H2, which hardly moves the one-step bias, also ends the 'climate holds' count after 2.2 years, just like L7H3 "
+              "off (2.3 y) and L6H2 off (2.2 y). In all three, the first breach is a single day of jet-level wind more than "
+              "3 m/s off, and at most 0.3% of days are ever outside the bounds: any full head ablation makes the run "
+              "slightly noisier, not unstable. Against that control: removing L7H3, which at one step warms the model top, "
+              "gives a run that is colder at every level from year 1 and ends with the worst mid-troposphere (−3.9 K in year "
+              "10). Removing L6H2 leaves the model top about 6 K too cold from year 3 on. Halving L7H3 instead keeps the run "
+              "inside the bounds for all 10 years. Yet every run, control and interventions alike, ends with the same "
+              "late-decade signature: the model top warming by 2–3 K over the last two years while T_3 cools. "
+              "So the drift is not written by any single head. It looks like a property of the coupled system (or of "
+              "the 2008–2009 forcing, which every run shares), not a component to switch off.</p>"
+            + "<p class='muted'>* climate holds: as in <a href='#decade'>Decade runs</a> (global T_7 within 2 K, PS within "
+              "100 Pa, U_3 within 3 m/s, daily). Starting states: " + f"{ec['starts'][0]} … {ec['starts'][-1]}, every 15 days.</p>")
+
+    # 8. SAEs
+    arch = ROOT / "archives"
+    srows = []
+    for name, d, lay in (("v2", "v2-2010-jan", (3, 5, 8)), ("v8 level 3", "v8-2010-jan-level3", (3, 6)),
+                         ("v8 surface", "v8-2010-jan-level8", (3, 6))):
+        for L in lay:
+            p = arch / d / "bases" / f"sae-topk32-layer{L}.npz"
+            if not p.exists():
+                continue
+            rec = json.loads(str(np.load(p, allow_pickle=True)["record"]))
+            m = rec["meta"]["metrics"]
+            srows.append([name, L, rec["meta"]["training"]["n_features"], f"{m['explained_variance']:.1%}",
+                          f"{m['mean_active_features']:.0f}", f"{m['dead_fraction']:.1%}"])
+    if srows:
+        parts.append(
+            "<h3 id='v8-sae'>Sparse autoencoders per level</h3>"
+            "<p>Top-k sparse autoencoders (1024 features, k = 32) on the residual stream of January 2010, one token "
+            "kind at a time: v8's level-3 tokens and its surface tokens, beside v2's whole-column tokens. Archives and "
+            "dictionaries are in <code>archives/</code> (exege format).</p>"
+            + _table(["tokens", "layer", "features", "variance explained", "active per token", "dead"], srows)
+            + "<p>v8's surface tokens are the easiest to compress (96% at layer 3, 93% at layer 6); its level-3 tokens sit "
+              "close to v2's whole-column tokens (85–91% against 88–93%). Both v8 token kinds lose some variance between "
+              "layers 3 and 6, as the vertical heads mix levels into them.</p>")
+    return "".join(parts)
+
+
 def _explorer_versions(out: Path) -> None:
     """Put the v1 -> v8 drawings into the architecture explorer (generated by build_arch.py),
     between markers so a rebuild replaces them."""
@@ -1020,7 +1343,7 @@ into heads that work across a level and heads that work up and down a column.</p
 <figure style="margin:0 0 12px"><img class="fig" src="arch/v8.svg" alt="v8: 9 token levels over 4050 patches; in each block heads 0 to 3 attend across a level and heads 4 and 5 up and down a column">
 <figcaption class="muted">In v8 the residual stream is 9 × 4050 × 384. Each block's heads 0–3 attend across their level, heads 4–5 up and down
 their column, and everything else acts token by token, so every exchange between levels goes through a vertical head
-(knocking them out removes 94% of the coupling between levels: see <a href="#threed">3D model</a>).</figcaption></figure>"""
+(knocking them out removes 94% of the coupling between levels: see <a href="#inside-v8">Inside v8</a>).</figcaption></figure>"""
 
 
 def build(out: Path) -> None:
@@ -1047,7 +1370,7 @@ def build(out: Path) -> None:
                 f'<div class="muted">{"then drifts" if m.get("blowup") else "stable"}</div></div></div>')
     nbs = notebooks_html(out)
     nb_list = "".join(f'<li><a href="{h}">{s}</a>: {html.escape(NB_TITLES.get(s, ""))}</li>' for s, h in nbs)
-    body = f"""<nav class="muted"><a href="#architecture">Architecture</a><a href="training.html">Training</a><a href="#versions">Versions</a><a href="#stability">Stability</a><a href="#decade">Decade runs</a><a href="#threed">3D model</a><a href="#rossby">Rossby waves</a><a href="#circuits">Circuits</a><a href="#notebooks">Notebooks</a></nav>
+    body = f"""<nav class="muted"><a href="#architecture">Architecture</a><a href="training.html">Training</a><a href="#versions">Versions</a><a href="#stability">Stability</a><a href="#decade">Decade runs</a><a href="#threed">3D model</a><a href="#rossby">Rossby waves</a><a href="#circuits">Circuits</a><a href="#inside-v8">Inside v8</a><a href="#notebooks">Notebooks</a></nav>
 <h1>Inside a ViT emulator of E3SM</h1>
 <p class="lede">A close-to-vanilla Vision Transformer that steps E3SMv3 (1°, AMIP) forward 6 hours, built to be taken apart for the
 interpretability hackathon: attention heads, circuits (Vi-CD) and physical laws (LAWFUL), with <a href="https://github.com/mahf708/exege">exege</a>. Checkpoints and latent archives are on Hugging Face:
@@ -1072,6 +1395,7 @@ column is the older, laxer criterion (global near-surface temperature off by mor
 {threed_section(out)}
 {analysis_sections(out, analysed)}
 {rossby_versions(out)}
+{inside_v8_section(out)}
 <h2 id="notebooks">Hackathon notebooks (00–07 executed on {current["v"]["name"]}, 08 on v8)</h2><ul>{nb_list}</ul>
 <p class="muted">Run them on Swing: <code>HACKATHON.md</code> in the vit-interp repository; the exege layers are on the
 <code>mahf708/circuits</code> branch of exege.</p>"""
