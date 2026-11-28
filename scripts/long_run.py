@@ -49,6 +49,7 @@ def main():
                    help="components to mean-ablate at every step, e.g. L7H3,L6MLP (an intervention test)")
     p.add_argument("--ablate-scale", type=float, default=0.0,
                    help="keep this fraction of the ablated components' spatial pattern (0 = full mean-ablation)")
+    p.add_argument("--correct", default=None, help="correctors, e.g. dry_air+positive+moisture (default: the checkpoint's)")
     p.add_argument("--jitter", default="", help="patch jitter mode: cycle16, cycle16d, lon, random")
     p.add_argument("--out", required=True)
     a = p.parse_args()
@@ -58,7 +59,8 @@ def main():
     lat = np.asarray(meta["lat"])
     em, ck = Emulator.load(resolve_checkpoint(a.ckpt), Stats(a.data), lat, map_location=dev)
     em = em.to(dev).eval()
-    attach(em, ck, meta)
+    attach(em, ck, meta, a.correct)
+    print("correctors:", em.corrector.cfg if em.corrector is not None else None, flush=True)
     smooth = SeamFilter(lat, len(meta["lon"]), a.filter, a.shapiro).to(dev) if (a.filter or a.shapiro) else None
     from vit_interp.filters import PatchJitter
     hooks = None
