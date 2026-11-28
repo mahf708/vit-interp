@@ -1034,8 +1034,9 @@ def inside_v8_section(out: Path) -> str:
               f"the 32 horizontal heads instead leaves {o.get('no horizontal heads', float('nan')) / o['intact']:.0%} of it. "
               "Horizontal heads still matter for vertical coupling because what a vertical head reads at another level "
               "was first shaped by horizontal mixing there. The remaining few percent enter outside attention (not yet "
-              "traced). As designed: in v8, exchange between levels is attention's job, done by a small, named set of "
-              "heads.</p>")
+              "traced, but the likely route is the 3×3 output convolution, which mixes all 44 output channels, levels "
+              "included; in absolute terms it is largest from level 6 into level 7). Inside the network, exchange between "
+              "levels is attention's job, done by a small, named set of heads.</p>")
 
     # 2. surface-reading heads
     vp = LAB / "vertical_reading.json"
@@ -1139,8 +1140,13 @@ def inside_v8_section(out: Path) -> str:
                     g = G[name]
                     rows.append([band, name, len(g["components"]) if isinstance(g.get("components"), list) else "",
                                  f"{m0:.2f}", f"{g['M_suf']:+.2f}", f"{g['M_nec']:+.2f}"])
-        searched = [f"{b}: " + "; ".join(f"τ {c['tau']}: {len(c['units'])} groups" for c in lg[b].get("search", []))
-                    for b in lg if lg[b].get("search")]
+        srows = []
+        for band in ("45N", "45S"):
+            prev: list = []
+            for c in (lg.get(band) or {}).get("search", []):
+                new = [u for u in c["units"] if u not in prev]
+                srows.append([band, c["tau"], len(c["units"]), ", ".join(new)])
+                prev = list(c["units"])
         parts.append(
             "<h3 id='v8-lawful'>Where does the Rossby law live? (LAWFUL by head type)</h3>"
             "<p>The barotropic Rossby probe of <a href='#rossby-versions'>Rossby waves across versions</a>, scored as the "
@@ -1152,7 +1158,13 @@ def inside_v8_section(out: Path) -> str:
               "still 0.54 at 45°N and 0.84 at 45°S, against 0.83 and 0.92 intact. A barotropic wave is a "
               "within-level phenomenon, and v8 computes it mostly within levels. No head group reproduces the law on its "
               "own.</p>"
-            + (f"<p class='muted'>Circuit search over per-block head groups: {'; '.join(searched)}.</p>" if searched else ""))
+            + ("<p><b>And v8 has a law circuit.</b> LAWFUL's search over 24 groups (per block: its horizontal heads, its "
+               "vertical heads, its MLP) finds nested τ-consistent circuits at both latitudes. For the 2D models the search was over whole blocks: v2 and "
+               "v4 had no circuit and v3's was blocks 5–7 entire (<a href='#rossby-versions'>Rossby waves across versions</a>). Each row adds the groups listed to the row "
+               "above:</p>" + _table(["latitude", "τ", "groups", "groups added"], srows)
+               + "<p>The core, at τ = 0.3, is <b>block 7's horizontal heads plus the MLPs of the early blocks and blocks 6–7</b>. "
+                 "Vertical heads enter only at τ = 0.9 at 45°N, and never at 45°S. Splitting heads by axis gives the search finer, physically named units "
+                 "to choose from; in the 2D models every head mixes horizontally and vertically at once.</p>" if srows else ""))
 
     # 6. surface heating circuits
     sp = LAB / "surface_circuits.json"
@@ -1245,10 +1257,60 @@ def inside_v8_section(out: Path) -> str:
               "10). Removing L6H2 leaves the model top about 6 K too cold from year 3 on. Halving L7H3 instead keeps the run "
               "inside the bounds for all 10 years. Yet every run, control and interventions alike, ends with the same "
               "late-decade signature: the model top warming by 2–3 K over the last two years while T_3 cools. "
-              "So the drift is not written by any single head. It looks like a property of the coupled system (or of "
-              "the 2008–2009 forcing, which every run shares), not a component to switch off.</p>"
+              "So the drift is not written by any single head (and, below, not by the 2008–2009 forcing either).</p>"
             + "<p class='muted'>* climate holds: as in <a href='#decade'>Decade runs</a> (global T_7 within 2 K, PS within "
               "100 Pa, U_3 within 3 m/s, daily). Starting states: " + f"{ec['starts'][0]} … {ec['starts'][-1]}, every 15 days.</p>")
+
+    # 7b. what drives the late drift
+    arms = [("v8, jitter + filter (3 seeds)", ["long-f3d-rope-jit-f", "long-f3d-rope-jit-f-seed1", "long-f3d-rope-jit-f-seed2"], 2000),
+            ("same, year-boundary step fixed", ["long-v8-jf-c16-fixyr"], 2000),
+            ("fresh start in 2006", ["long-v8-jf-from2006"], 2006),
+            ("fresh start in 2008", ["long-v8-jf-from2008"], 2008),
+            ("jitter order not locked to the UTC hour (2 seeds)", ["long-v8-jf-c16d", "long-v8-jf-c16d-s1"], 2000),
+            ("random jitter", ["long-v8-jf-rand"], 2000),
+            ("energy corrector off", ["long-v8-jf-noenergy"], 2000),
+            ("top 2 levels: increments × 0.9", ["long-v8-jf-damptop10"], 2000),
+            ("top 2 levels: 25% of the small-scale increment removed", ["long-v8-jf-smalltop25"], 2000),
+            ("<b>top 2 levels: 50% of the small-scale increment removed</b>",
+             ["long-v8-jf-smalltop50", "long-v8-jf-smalltop50-s1", "long-v8-jf-smalltop50-s2"], 2000)]
+    arows = []
+    for label, tags, y0 in arms:
+        fs = [DRIFT / f"{t}.npz" for t in tags if (DRIFT / f"{t}.npz").exists()]
+        if not fs:
+            continue
+        vals = []
+        for f in fs:
+            z = np.load(f)
+            n = list(z["names"]); d = z["g_e"] - z["g_t"]
+            last = d[(2009 - y0) * 365:(2010 - y0) * 365]
+            r = z["dd_e"] / z["dd_t"]
+            vals.append([last[:, n.index(c)].mean() for c in ("T_0", "T_1", "T_3", "T_7")]
+                        + [min(r[n.index("T_0")], r[n.index("T_1")]), max(r[n.index("T_0")], r[n.index("T_1")])])
+        v = np.array(vals)
+        rng = lambda j: (f"{v[:, j].mean():+.1f}" if len(v) == 1  # noqa: E731
+                         else f"{v[:, j].min():+.1f} to {v[:, j].max():+.1f}")
+        arows.append([label + (f" <span class='muted'>({len(fs)} run{'s' if len(fs) > 1 else ''})</span>" if len(tags) > 1 else ""),
+                      rng(0), rng(1), rng(2), rng(3), f"{v[:, 4].min():.2f}–{v[:, 5].max():.2f}"])
+    if arows:
+        parts.append(
+            "<h3 id='v8-drift-cause'>What drives the late drift?</h3>"
+            "<p>Ten-year free runs (2000–2009, as in <a href='#decade'>Decade runs</a>), each changing one thing. Columns: "
+            "global-mean error in <b>2009</b> (the last year) at the model top (T_0, T_1), mid-troposphere (T_3) and lowest "
+            "level (T_7), and the day-to-day variability of the top two levels' temperature relative to E3SM's (1 = right; "
+            "damping that only hides the drift would push it below 1).</p>"
+            + _table(["run", "T_0 (K)", "T_1 (K)", "T_3 (K)", "T_7 (K)", "top variability ÷ E3SM"], arows)
+            + "<ul><li><b>Not the forcing.</b> Runs started fresh in 2006 or 2008 are clean in 2009, the year the decade runs "
+              "are worst: the drift builds up over about 8 years of free running.</li>"
+              "<li><b>Not the jitter order.</b> Unlocking the jitter from the time of day (or randomizing it) makes the late "
+              "warming worse, not better.</li>"
+              "<li><b>Not the energy corrector.</b> Without it, the raw network is 1–2 K too cold through the column from year 1 "
+              "(the corrector was hiding a cold bias), and the model top still warms by about 2 K at the end.</li>"
+              "<li><b>Small scales at the top.</b> Damping all of the top two levels' increments does little; removing half of "
+              "just their small-scale part (what a 30-wavenumber, 2-pass smoother takes out) removes most of the top "
+              "warming and keeps E3SM's variability. The drift is fed by small-scale noise accumulating at the model top, where "
+              "the atmosphere is thin and dynamical cores usually add extra damping (a sponge layer).</li></ul>"
+            + "<p class='muted'>The damping arms run outside the network, like the seam filter "
+              "(<code>scripts/long_run.py --damp-small-top</code>). The first v9 fine-tune targets the raw cold bias; the top-level small scales are next.</p>")
 
     # 8. SAEs
     arch = ROOT / "archives"
@@ -1342,8 +1404,9 @@ into heads that work across a level and heads that work up and down a column.</p
 <h3 id="arch-v8">Inside v8: tokens per level, horizontal and vertical heads</h3>
 <figure style="margin:0 0 12px"><img class="fig" src="arch/v8.svg" alt="v8: 9 token levels over 4050 patches; in each block heads 0 to 3 attend across a level and heads 4 and 5 up and down a column">
 <figcaption class="muted">In v8 the residual stream is 9 × 4050 × 384. Each block's heads 0–3 attend across their level, heads 4–5 up and down
-their column, and everything else acts token by token, so every exchange between levels goes through a vertical head
-(knocking them out removes 94% of the coupling between levels: see <a href="#inside-v8">Inside v8</a>).</figcaption></figure>"""
+their column, and the MLPs act token by token. Inside the network every exchange between levels goes through a vertical head; after it, the
+3×3 output convolution mixes all 44 output channels, levels included (knocking out the vertical heads removes 94% of the
+coupling between levels; the output convolution carries most of the rest: see <a href="#inside-v8">Inside v8</a>).</figcaption></figure>"""
 
 
 def build(out: Path) -> None:

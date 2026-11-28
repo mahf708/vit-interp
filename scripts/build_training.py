@@ -274,7 +274,8 @@ visible at <code>hook_cond_scale</code>/<code>hook_cond_bias</code>.</p>""", "<c
     m.append(_method("m-crps", "Training an ensemble with the fair CRPS (v3, v4)", """
 <p>MSE would teach the stochastic model to ignore its noise (the mean is the MSE-optimal answer). Instead each training sample is run
 as <b>2 members</b> with independent noise, and the loss is the continuous ranked probability score, a proper score for a
-whole distribution, evaluated per grid cell and channel and area-weighted:</p>
+whole distribution, evaluated per grid cell and channel and averaged over the grid. As in ACE, that average is a plain mean over grid points, not
+area-weighted, so on this latitude–longitude grid polar cells count more than their area (validation scores are area-weighted):</p>
 <pre class="eq">CRPS = E|X − y| − ½ E|X − X′|     (fair estimator: the second expectation over distinct members only)</pre>
 <p>The first term rewards members close to the truth; the second rewards members that differ from each other. A model that collapses
 its members loses the second term; one that spreads them too much pays in the first. Its minimum is reached when the members are
